@@ -360,6 +360,7 @@
   .result-info{display:flex; flex-direction:column; gap:10px; flex:1 1 240px; min-width:220px;}
   .result-info .field-filename{max-width:340px;}
   .result-info .field label{margin-bottom:0;}
+  .btn-group{display:flex; gap:10px; flex-wrap:wrap;}
 
   .fileinfo{
     display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 14px;

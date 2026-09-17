@@ -3870,7 +3870,6 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const clearAllBtn = document.getElementById("ocr-clearall");
   const langThaiChk = document.getElementById("ocr-lang-tha");
   const langEngChk = document.getElementById("ocr-lang-eng");
-  const forceChk = document.getElementById("ocr-force");
   const runBtn = document.getElementById("ocr-run");
   const cancelBtn = document.getElementById("ocr-cancel");
   const progress = document.getElementById("ocr-progress");
@@ -3880,6 +3879,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const result = document.getElementById("ocr-result");
   const downloadBtn = document.getElementById("ocr-download");
   const downloadLabelEl = document.getElementById("ocr-download-label");
+  const downloadTextBtn = document.getElementById("ocr-download-text");
   const filenameInput = document.getElementById("ocr-filename-input");
   const filenameExtEl = document.getElementById("ocr-filename-ext");
   const filenameLabelEl = document.getElementById("ocr-filename-label");
@@ -3889,6 +3889,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // its own progress/result so one bad file doesn't block the rest.
   let items = [];
   let outputBlob = null, outputExt = ".pdf", outputBase = "document";
+  // Text-only export ("ดาวน์โหลดข้อความ (.docx)") is built lazily, only when
+  // the user actually clicks that button — it reuses the text each page's
+  // `it.pageTexts` already collected during the OCR run below, so no re-OCR
+  // is needed. `lastDoneItems` is the same batch the main PDF/ZIP download
+  // was built from, kept around so the text button can be clicked any time
+  // after a run finishes (not just immediately after).
+  let lastDoneItems = [];
   let isRunning = false;
   let cancelRequested = false;
 
@@ -3939,10 +3946,21 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     items.forEach((it, idx)=>{
       const card = document.createElement("div");
       card.className = "filecard";
-      const thumb = document.createElement("div");
-      thumb.className = "thumb-ph";
-      thumb.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:var(--text-3);" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
-      card.appendChild(thumb);
+      if(it.thumbCanvas){
+        const thumb = document.createElement("canvas");
+        thumb.width = it.thumbCanvas.width; thumb.height = it.thumbCanvas.height;
+        thumb.getContext("2d").drawImage(it.thumbCanvas, 0, 0);
+        card.appendChild(thumb);
+      }else{
+        // Fallback placeholder for files whose first page couldn't be
+        // rendered (e.g. a corrupt/unreadable PDF) — real thumbnail is
+        // preferred (matches "รวมไฟล์"/"แปลงรูปเป็น PDF") since it lets
+        // the user visually confirm they picked the right file at a glance.
+        const thumb = document.createElement("div");
+        thumb.className = "thumb-ph";
+        thumb.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:var(--text-3);" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+        card.appendChild(thumb);
+      }
       const meta = document.createElement("div");
       meta.className = "meta";
       const sub = it.statusText || (it.numPages ? `${it.numPages} หน้า` : "");
@@ -3969,14 +3987,15 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(isRunning || !files.length) return;
     for(const file of files){
       const buf = await readFileAsArrayBuffer(file);
-      let numPages = 0;
+      let numPages = 0, thumbCanvas = null;
       try{
-        const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
-        numPages = doc.numPages;
+        const res = await renderPageCanvas(buf, 1, 88);
+        numPages = res.numPages;
+        thumbCanvas = res.canvas;
       }catch(e){ numPages = 0; }
       items.push({
-        file, buffer: buf, fileName: file.name.replace(/\.pdf$/i, ""), numPages,
-        status: "pending", statusText: "", outputBlob: null, lowConfFlags: [],
+        file, buffer: buf, fileName: file.name.replace(/\.pdf$/i, ""), numPages, thumbCanvas,
+        status: "pending", statusText: "", outputBlob: null, lowConfFlags: [], pageTexts: [],
       });
     }
     body.style.display = "block";
@@ -3989,6 +4008,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   clearAllBtn.onclick = ()=>{
     if(isRunning) return;
     items = [];
+    lastDoneItems = [];
     body.style.display = "none";
     input.value = "";
     result.classList.remove("show");
@@ -4011,7 +4031,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     numwarnEl.style.display = "none";
     result.classList.remove("show");
 
-    items.forEach(it=>{ it.status = "pending"; it.statusText = "รอคิว..."; it.outputBlob = null; it.lowConfFlags = []; });
+    items.forEach(it=>{ it.status = "pending"; it.statusText = "รอคิว..."; it.outputBlob = null; it.lowConfFlags = []; it.pageTexts = []; });
     renderList();
 
     let worker = null;
@@ -4046,7 +4066,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           const total = pdfPages.length;
           const pdfjsDoc = await pdfjsLib.getDocument({ data: it.buffer.slice(0) }).promise;
 
-          let ocredCount = 0, skippedCount = 0, timedOutCount = 0, cancelledThisFile = false, confSum = 0, confCount = 0;
+          let ocredCount = 0, timedOutCount = 0, cancelledThisFile = false, confSum = 0, confCount = 0;
 
           for(let i = 1; i <= total; i++){
             if(cancelRequested){ cancelledThisFile = true; cancelledOverall = true; break; }
@@ -4054,17 +4074,15 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
             setStatus(status, `ไฟล์ ${idx+1}/${items.length} "${it.file.name}" — หน้า ${i}/${total}...`, "loading");
             renderList();
             const pjsPage = await pdfjsDoc.getPage(i);
-
-            if(!forceChk.checked){
-              const tc = await pjsPage.getTextContent();
-              const hasText = tc.items.some(w => w.str && w.str.trim().length > 0);
-              if(hasText){
-                skippedCount++;
-                pagesDoneSoFar++;
-                progress.value = Math.round((pagesDoneSoFar/totalPagesAll)*100);
-                continue;
-              }
-            }
+            // Every page is always OCR'd for real, even ones that already
+            // have a text layer — some PDFs (certain Thai accounting/ERP
+            // export tools especially) embed a text layer whose internal
+            // character positioning is broken, so pdf.js's own
+            // getTextContent() comes out with bogus spaces jammed into the
+            // middle of words. Actually reading the rendered pixels through
+            // Tesseract sidesteps that broken metadata entirely and is far
+            // more reliable, so there is no "skip this page" fast path
+            // anymore — every page always gets the real OCR treatment.
 
             const baseViewport = pjsPage.getViewport({ scale: 1 });
             const scale = OCR_RENDER_WIDTH / baseViewport.width;
@@ -4088,6 +4106,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
               continue;
             }
             if(typeof data.confidence === "number"){ confSum += data.confidence; confCount++; }
+            // Tesseract's own full-page assembled text (already in correct
+            // reading order) — kept per-page for the text-only (.docx)
+            // export button, independent of the invisible PDF text layer
+            // drawn below from the same `data`.
+            it.pageTexts[i-1] = (data.text || "").trim();
 
             const pdfPage = pdfPages[i-1];
             const { width: pdfW, height: pdfH } = pdfPage.getSize();
@@ -4180,9 +4203,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           it.ocredCount = ocredCount; it.total = total;
           const avgConf = confCount ? Math.round(confSum/confCount) : null;
           const confPart = avgConf !== null ? ` · มั่นใจเฉลี่ย ~${avgConf}%` : "";
-          const skipPart = skippedCount ? ` (ข้าม ${skippedCount} หน้าที่มีข้อความอยู่แล้ว)` : "";
           const timeoutPart = timedOutCount ? ` (ข้าม ${timedOutCount} หน้าที่ใช้เวลานานเกินไป)` : "";
-          it.statsText = `OCR แล้ว <b>${ocredCount}</b> จาก <b>${total}</b> หน้า${skipPart}${timeoutPart}${confPart} · <b>${fmtBytes(it.outputBlob.size)}</b>`;
+          it.statsText = `OCR แล้ว <b>${ocredCount}</b> จาก <b>${total}</b> หน้า${timeoutPart}${confPart} · <b>${fmtBytes(it.outputBlob.size)}</b>`;
           it.status = cancelledThisFile ? "cancelled" : "done";
           it.statusText = (cancelledThisFile ? "✋ หยุดกลางคัน — " : "✓ เสร็จแล้ว — ") + `OCR ${ocredCount}/${total} หน้า${avgConf !== null ? ` (มั่นใจ ~${avgConf}%)` : ""}`;
         }catch(e){
@@ -4198,6 +4220,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       renderList();
 
       const doneItems = items.filter(it=> it.outputBlob);
+      lastDoneItems = doneItems;
       const allFlags = [];
       items.forEach(it=> (it.lowConfFlags||[]).forEach(f=> allFlags.push({ ...f, file: it.file.name })));
 
@@ -4260,6 +4283,58 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   };
 
   downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, outputBase, outputExt)); };
+
+  // "ดาวน์โหลดข้อความ (.docx)" — a separate export that never touches the
+  // PDF at all: just the text OCR (or the page's own existing text layer)
+  // read, laid out as plain Word paragraphs (one page = one page-break).
+  // Reuses vendor/docx.umd.min.js (the "docx" npm package, global `docx`),
+  // the same library + pattern as the "PDF to WORD" menu, lazy-loaded only
+  // when this button is actually clicked.
+  function buildOcrTextDocx(it){
+    const { Document, Paragraph, TextRun } = docx;
+    const children = [];
+    const total = it.total || (it.pageTexts ? it.pageTexts.length : 0);
+    for(let p = 0; p < total; p++){
+      const pageText = (it.pageTexts && it.pageTexts[p]) ? it.pageTexts[p] : "";
+      const lines = pageText ? pageText.split(/\r?\n+/) : [""];
+      lines.forEach((line, li)=>{
+        children.push(new Paragraph({
+          pageBreakBefore: p > 0 && li === 0,
+          children: [ new TextRun({ text: line || " ", font: "Tahoma", size: 24 }) ],
+        }));
+      });
+    }
+    if(!children.length) children.push(new Paragraph({ text: "" }));
+    return new Document({ sections: [{ children }] });
+  }
+
+  downloadTextBtn.onclick = async ()=>{
+    if(!lastDoneItems.length || downloadTextBtn.disabled) return;
+    downloadTextBtn.disabled = true;
+    try{
+      setStatus(status, "กำลังโหลดโมดูลสร้างไฟล์ Word...", "loading");
+      await loadScriptOnce("vendor/docx.umd.min.js");
+      const { Packer } = docx;
+
+      if(lastDoneItems.length === 1){
+        const it = lastDoneItems[0];
+        const blob = await Packer.toBlob(buildOcrTextDocx(it));
+        downloadBlob(blob, resolveFilename(filenameInput, `${it.fileName}_ocr_text`, ".docx"));
+      }else{
+        const zip = new JSZip();
+        for(const it of lastDoneItems){
+          const blob = await Packer.toBlob(buildOcrTextDocx(it));
+          zip.file(`${sanitizeFilename(it.fileName)}_ocr_text.docx`, blob);
+        }
+        const zipBlob = await zip.generateAsync({ type:"blob" });
+        downloadBlob(zipBlob, resolveFilename(filenameInput, "ocr_text_results", ".zip"));
+      }
+      setStatus(status, "ดาวน์โหลดไฟล์ข้อความ (Word) แล้ว", "ok");
+    }catch(e){
+      setStatus(status, "สร้างไฟล์ข้อความไม่สำเร็จ: " + e.message, "err");
+    }
+    downloadTextBtn.disabled = false;
+  };
 })();
 
 /* ================= JPG TO PDF ================= */

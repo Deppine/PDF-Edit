@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>iEditPDF</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20260910k" />
+<link rel="stylesheet" href="style.css?v=20260910l" />
 </head>
 <body>
 <div class="wrap">
@@ -1329,11 +1329,6 @@
             </div>
           </div>
         </div>
-        <div class="row">
-          <div class="field field-full">
-            <label class="checkline"><input type="checkbox" id="ocr-force" /> สแกนซ้ำทุกหน้า แม้ระบบคิดว่าหน้านั้นมีข้อความอยู่แล้ว</label>
-          </div>
-        </div>
       </details>
 
       <div class="row">
@@ -1363,12 +1358,17 @@
             </div>
           </div>
         </div>
-        <button class="btn" id="ocr-download">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span id="ocr-download-label">ดาวน์โหลดไฟล์</span>
-        </button>
+        <div class="btn-group">
+          <button class="btn" id="ocr-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span id="ocr-download-label">ดาวน์โหลดไฟล์</span>
+          </button>
+          <button class="btn" id="ocr-download-text">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+            <span id="ocr-download-text-label">ดาวน์โหลดข้อความ (.docx)</span>
+          </button>
+        </div>
       </div>
-      <p class="note">ระบบจะซ่อนชั้นข้อความที่อ่านได้ไว้ใต้ภาพเดิม (มองไม่เห็นด้วยตา) ทำให้เปิดไฟล์ดูเหมือนเดิมทุกประการ แต่ค้นหา (Ctrl+F) และคัดลอกข้อความได้ — หน้าที่มีข้อความอยู่แล้ว (ไม่ใช่ภาพสแกน) จะถูกข้ามโดยอัตโนมัติ ถ้าตัวเลข/จำนวนเงินในไฟล์ OCR อ่านได้ไม่ชัด ระบบจะเตือนให้ตรวจสอบหน้านั้นซ้ำก่อนนำไปใช้งานจริง การประมวลผลอาจใช้เวลาสักครู่ต่อไฟล์ ขึ้นอยู่กับความเร็วเครื่องและจำนวนหน้า — กด "ยกเลิก" เพื่อหยุดกลางคันและยังดาวน์โหลดผลลัพธ์เท่าที่ทำไปแล้วได้</p>
     </div>
   </section>
 </div>
@@ -1396,7 +1396,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20260910k"></script>
+<script src="script.js?v=20260910o"></script>
 
 </body>
 </html>
