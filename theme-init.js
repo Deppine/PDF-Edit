@@ -9,7 +9,7 @@
 (function(){
   var theme = "light";
   try{
-    var saved = localStorage.getItem("ieditpdf-theme");
+    var saved = localStorage.getItem("lyra-theme");
     if(saved === "light" || saved === "dark") theme = saved;
   }catch(e){
     // localStorage can throw in some locked-down/private-browsing contexts — fall back to light.

@@ -50,18 +50,13 @@
   /* ---------- header ---------- */
   header{margin-bottom:24px; display:flex; align-items:flex-start; gap:14px;}
   .header-text{min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:12px;}
-  .logo-img{flex-shrink:0; height:38px; width:auto; display:block;}
+  .logo-img{flex-shrink:0; height:44px; width:auto; display:block;}
   .badge{
     display:inline-flex; align-items:center; gap:6px; font-size:.72rem; font-weight:600;
     padding:4px 10px 4px 8px; border-radius:999px; background:var(--panel); color:var(--text-2);
     border:1px solid var(--border); box-shadow:var(--shadow-sm);
   }
   .badge .dot{width:6px; height:6px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px var(--success-soft); flex-shrink:0;}
-  .demo-badge{
-    display:inline-flex; align-items:center; font-size:.62rem; font-weight:700; letter-spacing:.04em;
-    text-transform:uppercase; padding:2px 8px; border-radius:999px; vertical-align:middle;
-    background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn-border); margin-left:8px;
-  }
   header h1{font-size:1.55rem; margin:0; letter-spacing:.01em; font-weight:700; font-family:'Kanit','Prompt','Noto Sans Thai',sans-serif;}
   header p{margin:0; color:var(--text-2); font-size:.9rem;}
 
@@ -125,16 +120,6 @@
     box-shadow:0 4px 14px -3px var(--accent-shadow);
   }
   .group-menu button.active svg{opacity:1;}
-  .tab-demo-glow{
-    display:inline-block; margin-left:6px; font-size:.6rem; font-weight:800; letter-spacing:.05em;
-    text-transform:uppercase; color:#ff3b3b;
-    text-shadow:0 0 3px #ff3b3b, 0 0 8px #ff3b3b, 0 0 14px #ff3b3b;
-    animation:tabDemoGlowPulse 1.8s ease-in-out infinite;
-  }
-  @keyframes tabDemoGlowPulse{
-    0%, 100%{ text-shadow:0 0 3px #ff3b3b, 0 0 8px #ff3b3b, 0 0 14px #ff3b3b; }
-    50%{ text-shadow:0 0 6px #ff5c5c, 0 0 16px #ff5c5c, 0 0 28px #ff5c5c; }
-  }
   @media (max-width:640px){
     nav.tabs-groups{ flex-direction:column; flex-wrap:nowrap; }
     .group-toggle{ justify-content:space-between; width:100%; }
@@ -181,17 +166,25 @@
   .row{display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:16px;}
 
   .field{display:flex; flex-direction:column; gap:6px; font-size:.79rem; color:var(--text-2); font-weight:600; min-width:140px;}
-  .field select, .field input[type=text], .field input[type=number]{
+  .field select, .field input[type=text], .field input[type=number], .field textarea{
     padding:9px 11px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--panel);
     color:var(--text); font-size:.87rem; font-weight:500; transition:border-color .15s, box-shadow .15s;
   }
+  .field textarea{width:100%; resize:vertical; min-height:64px; font-family:inherit;}
   .field select{
     appearance:none; -webkit-appearance:none;
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%2393969fff'/></svg>");
     background-repeat:no-repeat; background-position:right 12px center; padding-right:28px;
   }
-  .field select:focus, .field input[type=text]:focus, .field input[type=number]:focus{
+  .field select:focus, .field input[type=text]:focus, .field input[type=number]:focus, .field textarea:focus{
     outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-ring);
+  }
+  .qr-preview-wrap{
+    display:flex; justify-content:center; padding:20px; background:var(--panel-2);
+    border:1px solid var(--border); border-radius:var(--radius); margin-top:16px;
+  }
+  .qr-preview-wrap canvas{
+    width:220px; height:220px; max-width:100%; border-radius:8px; background:#fff; box-shadow:0 0 0 1px var(--border);
   }
   .field input[type=color]{
     width:44px; height:36px; padding:3px; border-radius:var(--radius-sm); border:1px solid var(--border);
@@ -255,6 +248,8 @@
   .btn.secondary{background:var(--panel-2); color:var(--text); border:1px solid var(--border); box-shadow:none;}
   .btn.secondary:hover{background:var(--border); filter:none;}
   .btn.small{padding:7px 12px; font-size:.78rem;}
+  .btn.danger{background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger); box-shadow:none;}
+  .btn.danger:hover{background:var(--danger); color:var(--accent-contrast); filter:none;}
 
   .filelist{display:flex; flex-direction:column; gap:8px; margin-top:16px;}
   .filecard{
@@ -435,6 +430,54 @@
 
 .qe-stage.qe-addmode{cursor:crosshair;}
 .qe-stage.qe-addmode canvas{cursor:crosshair;}
+.qe-stage.qe-symbolmode{cursor:crosshair;}
+.qe-stage.qe-symbolmode canvas{cursor:crosshair;}
+
+/* ---------- symbol insert (quickedit "+ เพิ่มสัญลักษณ์") ---------- */
+/* .field's own `display:flex` (style.css line ~183) ties in specificity with
+   the browser's default `[hidden]{display:none}` UA rule, and an author
+   stylesheet rule always wins that tie regardless of source order — so
+   plain [hidden] silently does nothing here without this explicit override.
+   Same issue already worked around for .qe-sidepanel-floating[hidden] above. */
+.qe-symbol-field{margin-bottom:12px;}
+.qe-symbol-field[hidden]{display:none;}
+.qe-symbol-palette{
+  display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  padding:8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--panel-2);
+}
+.qe-symbol-btn{
+  appearance:none; width:36px; height:36px; flex-shrink:0;
+  border:1px solid var(--border); background:var(--panel); color:var(--text);
+  border-radius:8px; font-size:1.05rem; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:border-color .15s, color .15s, background .15s;
+}
+.qe-symbol-btn:hover{border-color:var(--accent-2); color:var(--accent);}
+.qe-symbol-btn.active{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
+.qe-symbol-sep{width:1px; height:24px; background:var(--border); margin:0 4px; flex-shrink:0;}
+.qe-symbol-size{width:60px; padding:6px 8px; border-radius:6px; border:1px solid var(--border); font-family:inherit; background:var(--panel); color:var(--text);}
+.qe-symbol-color{width:36px; height:36px; padding:2px; border-radius:8px; border:1px solid var(--border); background:var(--panel); cursor:pointer; flex-shrink:0;}
+
+/* Overlay hit-target drawn over each placed symbol (these are vector
+   graphics baked into the PDF, not pdf.js text items, so — unlike .qe-box —
+   they get their own overlay box positioned directly from insertedSymbols
+   metadata rather than from pdf.js's getTextContent() output). */
+.qe-symbol-box{
+  position:absolute; cursor:grab; border-radius:4px;
+  outline:1.3px dashed rgba(91,79,232,.55); outline-offset:1px;
+  background:rgba(91,79,232,.05);
+}
+.qe-symbol-box:hover{background:rgba(91,79,232,.16); outline-color:var(--accent);}
+.qe-symbol-box:active{cursor:grabbing;}
+.qe-symbol-box.qe-symbol-box-dragging{opacity:.72; background:rgba(91,79,232,.22); z-index:5;}
+
+.qe-symbol-popover{
+  position:absolute; z-index:31; display:flex; gap:8px;
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
+  box-shadow:var(--shadow-lg); padding:10px;
+}
+.qe-symbol-popover[hidden]{display:none;}
 
 .qe-stage-wrap{
   overflow:auto; max-height:82vh;
@@ -592,6 +635,7 @@
   background:var(--panel); color:var(--text);
 }
 .qe-popover-actions{display:flex; align-items:center; gap:8px; margin-left:auto; flex-shrink:0;}
+.qe-popover-delete{margin-right:auto;}
 .qe-popover-row-inline{flex-direction:row; align-items:center; gap:14px;}
 .qe-style-group{flex-wrap:wrap; row-gap:8px;}
 .qe-bold-label{display:flex; align-items:center; gap:7px; cursor:pointer; font-size:.82rem; color:var(--text); user-select:none;}

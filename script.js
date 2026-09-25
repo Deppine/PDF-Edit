@@ -3,7 +3,7 @@ const { PDFDocument, StandardFonts, rgb, degrees, PageSizes, PDFName, PDFDict, P
 
 /* ================= THEME TOGGLE (light/dark) ================= */
 (function(){
-  const THEME_KEY = "ieditpdf-theme";
+  const THEME_KEY = "lyra-theme";
   const btn = document.getElementById("theme-toggle");
   if(!btn) return;
   // Mirrors theme-init.js: default is always light until the person
@@ -115,6 +115,76 @@ function setStatus(el, msg, kind){
   // msg is always treated as plain text (escaped) — only the loading spinner markup is trusted HTML.
   el.innerHTML = (kind === "loading" ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
 }
+// Some source PDFs embed fonts with a broken ToUnicode/CMap table, so
+// extracting their "text" (via pdf.js getTextContent, or occasionally via
+// OCR) can yield literal C0 control bytes (e.g. \x07) in place of a glyph
+// that was really meant to be something like a Thai tone mark. XML 1.0 only
+// allows tab/LF/CR among control characters in text content — any other
+// control byte (\x00-\x08, \x0B, \x0C, \x0E-\x1F, \x7F) makes
+// word/document.xml invalid, which is a ZIP-valid but Word-unreadable
+// .docx (Word shows "Text Recovery converter"). Strip them before they
+// ever reach a TextRun so exported PDF-to-Word / OCR-to-Word files always
+// open cleanly.
+function stripXmlIllegalChars(str){
+  return String(str).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+// Detects the "Thai text layer with broken glyph positioning" defect seen in
+// some PDF export/print-to-PDF tools (a different symptom of the same class
+// of bug as stripXmlIllegalChars above, but here the source font maps a
+// glyph to a literal space instead of a control byte): a space character
+// ends up jammed directly before a Thai *dependent* vowel or tone mark —
+// e.g. "ด าเนินการ" instead of "ดำเนินการ", "แก ้ปัญหา" instead of
+// "แก้ปัญหา". These characters (SARA A/AA/AM/I/II/UE/UEE/U/UU, PHINTHU,
+// LAKKHANGYAO, MAITAIKHU, the four tone marks, THANTHAKHAT, NIKHAHIT,
+// YAMAKKAN) NEVER legally begin a word in Thai orthography — they always
+// attach to the consonant before them — so a space immediately before one
+// is never real inter-word spacing, only broken positional data. (Deliberately
+// excludes the *leading* vowels เ/แ/โ/ใ/ไ, U+0E40-U+0E44, which commonly and
+// correctly start a word.) Confirmed empirically (see project notes,
+// 2026-09-25) against pdf.js's own getTextContent() output on a real
+// affected PDF, independent of any of this app's own row/spacing logic —
+// this is baked into the source file, not something we introduce.
+const BROKEN_THAI_SPACING_RE = /[ \t][\u0E30-\u0E3A\u0E45\u0E47-\u0E4E]/;
+function looksLikeBrokenThaiTextLayer(text){
+  return BROKEN_THAI_SPACING_RE.test(text || "");
+}
+// Tesseract's page-segmentation step sometimes detects the SAME physical
+// line of text twice: once correctly, and once as a low-fidelity "ghost"
+// duplicate (picked up from rendering/anti-aliasing edges near the real
+// strokes) with a near-identical bounding box but much lower confidence
+// and garbled text — confirmed by inspecting real output: the ghost's box
+// overlaps the real line's box almost exactly. This is exactly where junk
+// like "0จ0" or "ข่" in an exported page comes from: a whole ghost line
+// getting drawn/exported alongside the real one. A flat confidence cutoff
+// can't safely separate ghosts from genuinely-hard-to-read short labels
+// (both can land in the same confidence range), but bounding-box overlap
+// can: for any two lines whose boxes overlap substantially, only the
+// higher-confidence one is real.
+//
+// Shared at module scope (not just the OCR menu's own closure) because the
+// "PDF to WORD" menu's broken-text-layer OCR fallback needs the exact same
+// dedup logic — see its use there.
+function dedupeOcrLines(rawLines){
+  const kept = [];
+  const sorted = rawLines.slice().sort((a, b)=> b.confidence - a.confidence);
+  for(const cand of sorted){
+    const cb = cand.bbox;
+    const candArea = Math.max(1, (cb.x1 - cb.x0) * (cb.y1 - cb.y0));
+    const isDuplicate = kept.some(k=>{
+      const kb = k.bbox;
+      const ox = Math.max(0, Math.min(cb.x1, kb.x1) - Math.max(cb.x0, kb.x0));
+      const oy = Math.max(0, Math.min(cb.y1, kb.y1) - Math.max(cb.y0, kb.y0));
+      const overlapArea = ox * oy;
+      const kArea = Math.max(1, (kb.x1 - kb.x0) * (kb.y1 - kb.y0));
+      return overlapArea / Math.min(candArea, kArea) > 0.4;
+    });
+    if(!isDuplicate) kept.push(cand);
+  }
+  // Restore natural top-to-bottom, left-to-right reading order — the
+  // confidence sort above only decided who wins, not the output order.
+  kept.sort((a, b)=> (a.bbox.y0 - b.bbox.y0) || (a.bbox.x0 - b.bbox.x0));
+  return kept;
+}
 // pdf-lib does not actually support encrypted PDFs. `PDFDocument.load(..., {
 // ignoreEncryption: true })` only suppresses its "can't load encrypted PDF"
 // error — it does NOT decrypt anything. The file's real content streams stay
@@ -170,7 +240,16 @@ async function renderPageCanvas(arrayBuffer, pageNum, targetWidth){
   canvas.width = viewport.width; canvas.height = viewport.height;
   const ctx = canvas.getContext("2d");
   await page.render({ canvasContext: ctx, viewport }).promise;
-  return { canvas, numPages: doc.numPages, doc, scale };
+  // viewport/pjsPage are returned too (not just scale) so callers that place
+  // an overlay on the rendered page (signature, stamps, etc.) can convert
+  // between rendered-pixel space and true PDF point space correctly on a
+  // page that has its own /Rotate value — pdf.js's viewport already bakes
+  // that rotation in (this is why the canvas always renders upright, as the
+  // user expects), but pdf-lib draws in the page's RAW, un-rotated frame, so
+  // a caller needs the viewport's own transform (via convertToPdfPoint) to
+  // bridge the two rather than just dividing by `scale`, which silently
+  // ignores rotation and misplaces anything drawn back onto a rotated page.
+  return { canvas, numPages: doc.numPages, doc, scale, viewport, pjsPage: page };
 }
 function parseRanges(str, maxPage){
   const set = new Set();
@@ -1096,8 +1175,18 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const colorInput = document.getElementById("quickedit-color");
   const applyBtn = document.getElementById("quickedit-apply");
   const cancelBtn = document.getElementById("quickedit-cancel");
+  const deleteBtn = document.getElementById("quickedit-delete");
   const modeEditBtn = document.getElementById("quickedit-mode-edit");
   const modeAddBtn = document.getElementById("quickedit-mode-addtext");
+  const modeSymbolBtn = document.getElementById("quickedit-mode-symbol");
+  const symbolFieldEl = document.getElementById("quickedit-symbol-field");
+  const symbolPaletteEl = document.getElementById("quickedit-symbol-palette");
+  const symbolButtons = symbolPaletteEl ? Array.from(symbolPaletteEl.querySelectorAll(".qe-symbol-btn")) : [];
+  const symbolSizeInput = document.getElementById("quickedit-symbol-size");
+  const symbolColorInput = document.getElementById("quickedit-symbol-color");
+  const symbolPopoverEl = document.getElementById("quickedit-symbol-popover");
+  const symbolDeleteBtn = document.getElementById("quickedit-symbol-delete");
+  const symbolCancelBtn = document.getElementById("quickedit-symbol-cancel");
   const hintEl = document.getElementById("quickedit-hint");
   const previewEl = document.getElementById("quickedit-preview");
   const previewMaskEl = document.getElementById("quickedit-preview-mask");
@@ -1105,6 +1194,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
   const EDIT_HINT = "คลิกกล่องข้อความสีม่วงบนเอกสารเพื่อแก้ไข";
   const ADD_HINT = "คลิกตำแหน่งที่ต้องการบนเอกสารเพื่อวางข้อความใหม่ (กดปุ่ม \"+ เพิ่มข้อความ\" อีกครั้งเพื่อออกจากโหมดนี้)";
+  const SYMBOL_HINT = "เลือกสัญลักษณ์ด้านบน แล้วคลิกตำแหน่งที่ต้องการบนเอกสารเพื่อวาง (กดปุ่ม \"+ เพิ่มสัญลักษณ์\" อีกครั้งเพื่อออกจากโหมดนี้)";
 
   const RENDER_WIDTH = 720;
   let originalBuffer = null, fileName = "document";
@@ -1704,6 +1794,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   let activeItem = null, activeDiv = null;
   let insertPos = null; // { x, yBaseline } in PDF page coords — set when the popover is open in "add new text" mode instead of "edit existing text" mode
   let addMode = false;
+  let symbolMode = false;
+  let selectedSymbolKey = "check";
+  let lastSymbolSize = 20;
+  let lastSymbolColor = "#1a1a1a";
+  let symbolPopoverTarget = null; // { key, meta } for the symbol currently offered for deletion
   let lastFontKey = "sarabun";
   let lastBold = false;
   let lastItalic = false;
@@ -1722,13 +1817,14 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   let undoStack = [];
   let redoStack = [];
   function cloneInsertedMeta(){ return new Map(insertedMeta); }
+  function cloneInsertedSymbols(){ return new Map(insertedSymbols); }
   function refreshHistoryButtons(){
     if(undoBtn) undoBtn.disabled = undoStack.length === 0;
     if(redoBtn) redoBtn.disabled = redoStack.length === 0;
   }
   function pushUndoSnapshot(){
     if(!workingBytes) return;
-    undoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), page: currentPage });
+    undoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), insertedSymbols: cloneInsertedSymbols(), page: currentPage });
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
     redoStack = [];
     refreshHistoryButtons();
@@ -1744,8 +1840,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     qeFontCache = {};
     insertedMeta.clear();
     snapshot.insertedMeta.forEach((v,k)=> insertedMeta.set(k, v));
+    insertedSymbols.clear();
+    if(snapshot.insertedSymbols) snapshot.insertedSymbols.forEach((v,k)=> insertedSymbols.set(k, v));
     currentPage = snapshot.page || currentPage;
     closePopover();
+    closeSymbolPopover();
     await renderCurrentPage();
   }
 
@@ -1757,6 +1856,16 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // dragging can never accidentally move content the user never explicitly
   // added/touched via this tool.
   const insertedMeta = new Map();
+  // Placed symbols ("+ เพิ่มสัญลักษณ์"), keyed the same way as insertedMeta.
+  // Unlike inserted text, a symbol is drawn as pure vector graphics (lines/
+  // rectangles/an SVG path) rather than a real PDF text run, so pdf.js's
+  // getTextContent() never reports it — renderCurrentPage() has to build its
+  // clickable overlay box directly from this map instead of from pdf.js text
+  // items. Each value is { symbolKey, size, color, x, y } where x/y is the
+  // CENTER of the placed symbol in PDF page coordinates (the click point),
+  // matching the "click = where you're stamping" mental model rather than
+  // inserted text's baseline-left convention.
+  const insertedSymbols = new Map();
   function originKey(x, y){ return Math.round(x*2) + "," + Math.round(y*2); }
   let suppressNextClick = false; // set right before a drag-release so the click event the browser still fires afterward doesn't also pop the edit popover open
 
@@ -1994,13 +2103,38 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     };
   }
 
+  // The three edit modes (plain edit / add text / add symbol) are mutually
+  // exclusive. setAddMode(false) is the long-standing "back to plain edit"
+  // reset already called from several places (file load, "ล้างการแก้ไข",
+  // resetState) — rather than hunt down every one of those call sites to also
+  // clear the new symbol mode, setAddMode(false) itself now clears BOTH
+  // addMode and symbolMode, so every existing caller keeps meaning exactly
+  // what it always meant ("go back to plain edit"). Only setSymbolMode(true)
+  // (wired to its own chip) turns symbol mode on.
+  function updateModeUI(){
+    if(modeEditBtn) modeEditBtn.classList.toggle("active", !addMode && !symbolMode);
+    if(modeAddBtn) modeAddBtn.classList.toggle("active", addMode);
+    if(modeSymbolBtn) modeSymbolBtn.classList.toggle("active", symbolMode);
+    if(stageEl){
+      stageEl.classList.toggle("qe-addmode", addMode);
+      stageEl.classList.toggle("qe-symbolmode", symbolMode);
+    }
+    if(symbolFieldEl) symbolFieldEl.hidden = !symbolMode;
+    if(hintEl) hintEl.textContent = addMode ? ADD_HINT : symbolMode ? SYMBOL_HINT : EDIT_HINT;
+  }
   function setAddMode(on){
     addMode = !!on;
-    if(modeEditBtn) modeEditBtn.classList.toggle("active", !addMode);
-    if(modeAddBtn) modeAddBtn.classList.toggle("active", addMode);
-    if(stageEl) stageEl.classList.toggle("qe-addmode", addMode);
-    if(hintEl) hintEl.textContent = addMode ? ADD_HINT : EDIT_HINT;
+    symbolMode = false;
+    updateModeUI();
     if(!addMode) closePopover();
+    closeSymbolPopover();
+  }
+  function setSymbolMode(on){
+    symbolMode = !!on;
+    if(symbolMode) addMode = false;
+    updateModeUI();
+    if(symbolMode) closePopover();
+    if(!symbolMode) closeSymbolPopover();
   }
 
   function resetState(){
@@ -2010,6 +2144,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const ctx = canvasEl.getContext("2d");
     ctx.clearRect(0,0,canvasEl.width,canvasEl.height);
     insertedMeta.clear();
+    insertedSymbols.clear();
     clearHistory();
     setAddMode(false);
     closePopover();
@@ -2227,6 +2362,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     activeItem = null; activeDiv = null;
     insertPos = { x, yBaseline };
     if(popoverHead) popoverHead.textContent = "เพิ่มข้อความใหม่";
+    // Nothing exists yet at this position — no box to delete until "บันทึก"
+    // creates one, at which point re-clicking it opens openPopover() instead.
+    if(deleteBtn) deleteBtn.style.display = "none";
     if(colorLabel) colorLabel.textContent = "สี";
     textarea.value = "";
     fontsizeInput.value = lastInsertSize;
@@ -2252,6 +2390,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     activeItem = item; activeDiv = div;
     div.classList.add("editing");
     if(popoverHead) popoverHead.textContent = "แก้ไขข้อความ";
+    if(deleteBtn) deleteBtn.style.display = "";
     if(colorLabel) colorLabel.textContent = "สี (ดูดจากต้นฉบับ)";
     textarea.value = item.str;
     const approxSize = Math.hypot(item.transform[2], item.transform[3]) || 12;
@@ -2406,6 +2545,16 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       div.addEventListener("click", (e)=>{
         if(suppressNextClick){ suppressNextClick = false; return; }
         e.stopPropagation();
+        // In symbol mode, clicking existing text (very often an empty
+        // checkbox/ballot-box glyph already sitting in the document — a
+        // common pattern in forms exported from Word) should stamp the
+        // selected symbol centered on THAT item's own box, not open the
+        // text-edit popover. Precisely mouse-clicking inside a small
+        // existing checkbox at this canvas resolution is hard to get pixel-
+        // perfect; snapping to the item's real detected box is both easier
+        // and exactly matches what the person is trying to do — put a
+        // checkmark inside the box they can already see highlighted.
+        if(symbolMode){ stampSymbolOnExistingItem(div, item, e); return; }
         openPopover(item, div);
       });
       const key = originKey(item.transform[4], item.transform[5]);
@@ -2413,6 +2562,28 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         div.classList.add("qe-box-draggable");
         wireDrag(div, item, key);
       }
+    });
+
+    // Placed symbols never show up in pdf.js's getTextContent() (they're
+    // vector graphics, not text runs) — build their clickable overlay boxes
+    // directly from insertedSymbols instead, same textLayerEl the text boxes
+    // above use so they share its positioning/coordinate space.
+    insertedSymbols.forEach((meta, key)=>{
+      const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
+      const div = document.createElement("div");
+      div.className = "qe-symbol-box";
+      div.style.left = ((boxX - pageOriginX) * pageScale) + "px";
+      div.style.top = (canvasEl.height - ((boxY + meta.size) - pageOriginY) * pageScale) + "px";
+      div.style.width = (meta.size * pageScale) + "px";
+      div.style.height = (meta.size * pageScale) + "px";
+      div.title = "ลากเพื่อย้ายตำแหน่ง หรือคลิกเพื่อลบ";
+      div.addEventListener("click", (e)=>{
+        if(suppressNextClick){ suppressNextClick = false; return; }
+        e.stopPropagation();
+        openSymbolDeleteConfirm(meta, key);
+      });
+      wireSymbolDrag(div, key, meta);
+      textLayerEl.appendChild(div);
     });
 
     pageIndicator.textContent = `หน้า ${currentPage} / ${numPages}`;
@@ -2438,6 +2609,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingBytes = originalBuffer.slice(0);
       currentPage = 1;
       insertedMeta.clear();
+      insertedSymbols.clear();
       clearHistory();
       await renderCurrentPage();
       setStatus(status, "", "");
@@ -2472,8 +2644,28 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   if(modeAddBtn){
     modeAddBtn.onclick = ()=>{ setAddMode(true); };
   }
+  if(modeSymbolBtn){
+    modeSymbolBtn.onclick = ()=>{ setSymbolMode(true); };
+  }
+  symbolButtons.forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      selectedSymbolKey = btn.dataset.symbol;
+      symbolButtons.forEach(b=> b.classList.toggle("active", b === btn));
+    });
+  });
+  if(symbolSizeInput){
+    symbolSizeInput.value = lastSymbolSize;
+    symbolSizeInput.addEventListener("change", ()=>{
+      const v = parseFloat(symbolSizeInput.value);
+      if(v > 0) lastSymbolSize = v;
+    });
+  }
+  if(symbolColorInput){
+    symbolColorInput.value = lastSymbolColor;
+    symbolColorInput.addEventListener("input", ()=>{ lastSymbolColor = symbolColorInput.value; });
+  }
   document.addEventListener("keydown", (e)=>{
-    if(e.key === "Escape" && addMode) setAddMode(false);
+    if(e.key === "Escape" && (addMode || symbolMode)) setAddMode(false);
   });
   // Clicking anywhere on the stage while add-mode is on, other than on an
   // existing clickable text box (those stop propagation in their own click
@@ -2485,8 +2677,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // the new text's baseline directly, so text is written sitting "on" the
   // spot the user clicked, same as writing on a ruled line.
   stageEl.addEventListener("click", (e)=>{
-    if(!addMode || !workingBytes) return;
-    if(e.target.closest(".qe-box")) return;
+    if((!addMode && !symbolMode) || !workingBytes) return;
+    if(e.target.closest(".qe-box") || e.target.closest(".qe-symbol-box")) return;
     const rect = canvasEl.getBoundingClientRect();
     if(!rect.width || !rect.height) return;
     const scaleX = canvasEl.width / rect.width;
@@ -2501,8 +2693,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     // already has to do for the same reason).
     e.stopPropagation();
     const xPdf = px / pageScale + pageOriginX;
-    const yBaselinePdf = (canvasEl.height - py) / pageScale + pageOriginY;
-    openInsertPopover(xPdf, yBaselinePdf, e);
+    const yPdf = (canvasEl.height - py) / pageScale + pageOriginY;
+    if(symbolMode){
+      stampSymbolAt(xPdf, yPdf);
+    } else {
+      openInsertPopover(xPdf, yPdf, e);
+    }
   });
 
   // Measures the widest line of (possibly multi-line) text at a given font
@@ -2539,16 +2735,28 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return anchorX;
   }
 
-  // Draws one text run honoring italic (via pdf-lib's native xSkew — a real
+  // Draws one text run honoring italic (via pdf-lib's native skew — a real
   // oblique transform baked into the PDF, not a CSS-only fake) and underline
   // (a separate thin drawLine spanning the measured text width, since
   // pdf-lib/PDF text itself has no underline flag). Returns the measured
   // width so callers that already need it don't have to measure twice.
+  //
+  // IMPORTANT: this must set `ySkew`, not `xSkew`, despite "xSkew" sounding
+  // like the obviously-correct name for "lean the text sideways". pdf-lib
+  // builds the PDF text matrix as [cos(rotate), sin(rotate)+tan(xSkew),
+  // -sin(rotate)+tan(ySkew), cos(rotate), x, y] — i.e. `xSkew` feeds the
+  // matrix's b-component (which shifts Y based on X, tilting the whole
+  // baseline like a rotation) while `ySkew` feeds the c-component (which
+  // shifts X based on Y, the classic "letters lean, baseline stays flat"
+  // italic look). Using xSkew here previously made every italic run render
+  // as if rotated — dramatically so for longer strings, since the Y-shift
+  // scales with the text's full width — instead of a normal oblique slant.
+  // Verified by rendering both variants of the same string side by side.
   const ITALIC_SKEW_DEGREES = 12;
   function drawStyledText(page, text, opts){
     const width = measureTextWidth(opts.font, text, opts.size);
     const drawOpts = { x: opts.x, y: opts.y, size: opts.size, font: opts.font, color: opts.color };
-    if(opts.italic) drawOpts.xSkew = degrees(ITALIC_SKEW_DEGREES);
+    if(opts.italic) drawOpts.ySkew = degrees(ITALIC_SKEW_DEGREES);
     page.drawText(text, drawOpts);
     if(opts.underline){
       const thickness = Math.max(0.75, opts.size * 0.06);
@@ -2564,6 +2772,263 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       });
     }
     return width;
+  }
+
+  /* ================= SYMBOL INSERT ("+ เพิ่มสัญลักษณ์") =================
+   * Placed symbols (✓ ✗ □ ☑ ★ ● ○ ■ ▲ →) are drawn with pdf-lib's native
+   * vector primitives (drawLine/drawRectangle/drawEllipse/drawSvgPath)
+   * instead of as font glyph text. These exact Unicode characters are NOT
+   * covered by the Sarabun font this app embeds — checked its cmap directly
+   * (Thai/Latin webfonts essentially never include the dingbat/geometric-
+   * shapes Unicode blocks U+2600-27BF), so drawing them as text would
+   * silently fall back to blank .notdef glyphs. Vector primitives sidestep
+   * font coverage entirely and stay crisp at any size.
+   *
+   * Every spec's draw(page, x, y, size, color) fits its shape into the
+   * axis-aligned box [x, x+size] × [y, y+size] (bottom-left anchored, in raw
+   * PDF page coordinates). Verified by rendering all ten side by side with
+   * pdftoppm (both at this fractional-path scale and at a small 12pt size)
+   * before wiring this up — including confirming drawSvgPath's coordinate
+   * convention (SVG-style y-down path data, correctly flipped to PDF y-up on
+   * render) and that its `scale` option scales a 0..1 unit-box path exactly
+   * as expected.
+   */
+  function starPathD(cx, cy, rOuter, rInner, points){
+    points = points || 5;
+    const pts = [];
+    for(let i=0;i<points*2;i++){
+      const r = i % 2 === 0 ? rOuter : rInner;
+      const angle = (Math.PI/points)*i - Math.PI/2;
+      pts.push([cx + r*Math.cos(angle), cy + r*Math.sin(angle)]);
+    }
+    let d = "M " + pts[0][0] + " " + pts[0][1] + " ";
+    for(let i=1;i<pts.length;i++) d += "L " + pts[i][0] + " " + pts[i][1] + " ";
+    return d + "Z";
+  }
+  const STAR_PATH_D = starPathD(0.5, 0.5, 0.5, 0.2, 5);
+  const TRIANGLE_PATH_D = "M 0.5 0.05 L 0.95 0.9 L 0.05 0.9 Z";
+  const SYMBOL_SPECS = {
+    check: { title: "เครื่องหมายถูก",
+      draw(page, x, y, size, color){
+        const t = Math.max(0.75, size * 0.09);
+        page.drawLine({ start:{x:x+size*0.20, y:y+size*0.45}, end:{x:x+size*0.40, y:y+size*0.15}, thickness:t, color });
+        page.drawLine({ start:{x:x+size*0.40, y:y+size*0.15}, end:{x:x+size*0.85, y:y+size*0.85}, thickness:t, color });
+      } },
+    cross: { title: "เครื่องหมายกากบาท",
+      draw(page, x, y, size, color){
+        const t = Math.max(0.75, size * 0.09);
+        page.drawLine({ start:{x:x+size*0.15, y:y+size*0.15}, end:{x:x+size*0.85, y:y+size*0.85}, thickness:t, color });
+        page.drawLine({ start:{x:x+size*0.85, y:y+size*0.15}, end:{x:x+size*0.15, y:y+size*0.85}, thickness:t, color });
+      } },
+    squareEmpty: { title: "กรอบสี่เหลี่ยมว่าง",
+      draw(page, x, y, size, color){
+        page.drawRectangle({ x, y, width:size, height:size, borderColor: color, borderWidth: Math.max(0.75, size*0.06) });
+      } },
+    squareChecked: { title: "กล่องกาเครื่องหมาย",
+      draw(page, x, y, size, color){
+        page.drawRectangle({ x, y, width:size, height:size, borderColor: color, borderWidth: Math.max(0.75, size*0.06) });
+        const t = Math.max(0.6, size*0.075);
+        page.drawLine({ start:{x:x+size*0.225, y:y+size*0.45}, end:{x:x+size*0.40, y:y+size*0.20}, thickness:t, color });
+        page.drawLine({ start:{x:x+size*0.40, y:y+size*0.20}, end:{x:x+size*0.775, y:y+size*0.75}, thickness:t, color });
+      } },
+    star: { title: "ดาว",
+      // drawSvgPath's y-scale is negated internally (SVG path data is
+      // y-down, PDF is y-up), which — unlike drawRectangle/drawEllipse's
+      // bottom-left anchor — makes the path grow DOWNWARD from (x,y) rather
+      // than upward. Anchoring at y+size instead of y is what makes this
+      // land in the same [y, y+size] box as every other symbol here;
+      // verified by rendering a star/triangle against a reference rectangle
+      // outline at the same (x,y,size) and confirming they align exactly.
+      draw(page, x, y, size, color){ page.drawSvgPath(STAR_PATH_D, { x, y: y + size, scale: size, color }); } },
+    circleFilled: { title: "วงกลมทึบ",
+      draw(page, x, y, size, color){ page.drawEllipse({ x: x+size*0.5, y: y+size*0.5, xScale: size*0.45, yScale: size*0.45, color }); } },
+    circleEmpty: { title: "วงกลมโปร่ง",
+      draw(page, x, y, size, color){ page.drawEllipse({ x: x+size*0.5, y: y+size*0.5, xScale: size*0.45, yScale: size*0.45, borderColor: color, borderWidth: Math.max(0.75, size*0.06) }); } },
+    squareFilled: { title: "สี่เหลี่ยมทึบ",
+      draw(page, x, y, size, color){ page.drawRectangle({ x, y, width:size, height:size, color }); } },
+    triangle: { title: "สามเหลี่ยม",
+      // Same y+size anchor adjustment as `star` above — see its comment.
+      draw(page, x, y, size, color){ page.drawSvgPath(TRIANGLE_PATH_D, { x, y: y + size, scale: size, color }); } },
+    arrow: { title: "ลูกศร",
+      draw(page, x, y, size, color){
+        const t = Math.max(0.75, size * 0.09);
+        page.drawLine({ start:{x:x+size*0.05, y:y+size*0.5}, end:{x:x+size*0.8, y:y+size*0.5}, thickness:t, color });
+        page.drawLine({ start:{x:x+size*0.55, y:y+size*0.25}, end:{x:x+size*0.85, y:y+size*0.5}, thickness:t, color });
+        page.drawLine({ start:{x:x+size*0.55, y:y+size*0.75}, end:{x:x+size*0.85, y:y+size*0.5}, thickness:t, color });
+      } },
+  };
+
+  // Samples the page background just OUTSIDE a symbol's bounding box (up and
+  // left of its top-left corner) rather than inside/at its center — unlike
+  // text, a placed symbol can be entirely solid ink (a filled square/circle/
+  // star), so sampling anywhere inside its own box risks reading the symbol's
+  // own color back as "the background". Same single-pixel-sample tradeoff as
+  // the rest of this module's cover-box erasing (see the panel's own "ยังอยู่
+  // ในช่วงทดลอง" notice) — good enough on a flat page background, approximate
+  // over a photo/gradient.
+  function sampleBgColorForBox(boxX, boxY, boxSize){
+    try{
+      const px = Math.min(Math.max(0, Math.round((boxX - pageOriginX) * pageScale) - 4), canvasEl.width - 1);
+      const py = Math.min(Math.max(0, Math.round(canvasEl.height - (boxY + boxSize - pageOriginY) * pageScale) - 4), canvasEl.height - 1);
+      const data = canvasEl.getContext("2d").getImageData(px, py, 1, 1).data;
+      return { r: data[0]/255, g: data[1]/255, b: data[2]/255 };
+    }catch(e){ return { r:1, g:1, b:1 }; }
+  }
+
+  // Stamps the currently-selected symbol centered on the clicked point
+  // (xPdf,yPdf) — "click = where you're stamping", unlike inserted text's
+  // baseline-left click convention, since a symbol has no natural reading
+  // direction to anchor from. Mode stays active afterward so multiple
+  // symbols can be stamped in a row, matching "+ เพิ่มข้อความใหม่"'s own
+  // behavior of not auto-exiting add mode after one insert.
+  async function stampSymbol(xPdf, yPdf, size, color){
+    if(!workingDoc) return;
+    const spec = SYMBOL_SPECS[selectedSymbolKey];
+    if(!spec) return;
+    setStatus(status, "กำลังแทรกสัญลักษณ์...", "loading");
+    try{
+      pushUndoSnapshot();
+      // Same "reload from the latest saved bytes before mutating" rule as
+      // every other edit path in this module — see the comment on
+      // applyBtn.onclick below.
+      workingDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
+      workingDoc.registerFontkit(fontkit);
+      qeFontCache = {};
+      const page = workingDoc.getPage(currentPage - 1);
+      const { r, g, b } = hexToRgb01(color);
+      spec.draw(page, xPdf - size/2, yPdf - size/2, size, rgb(r, g, b));
+      workingBytes = await workingDoc.save();
+      insertedSymbols.set(originKey(xPdf, yPdf), { symbolKey: selectedSymbolKey, size, color, x: xPdf, y: yPdf });
+      await renderCurrentPage();
+      setStatus(status, "แทรกสัญลักษณ์แล้ว", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
+  }
+
+  // Stamps the selected symbol centered on the raw clicked point, sized per
+  // the palette's own size field — the normal "+ เพิ่มสัญลักษณ์" click-on-
+  // blank-page path.
+  async function stampSymbolAt(xPdf, yPdf){
+    await stampSymbol(xPdf, yPdf, lastSymbolSize, lastSymbolColor);
+  }
+
+  // Stamps the selected symbol centered on an EXISTING text item's own
+  // rendered box (e.g. a checkbox/ballot-box glyph already sitting in the
+  // document, exported from Word — a common form pattern) instead of the
+  // raw click point, and sizes it to fit that box rather than the palette's
+  // configured size. Precisely mouse-clicking inside a small existing
+  // checkbox at this canvas resolution is hard to get pixel-perfect;
+  // snapping to the item's own detected box (same box the purple .qe-box
+  // highlight already shows) both positions AND sizes the stamped symbol to
+  // match it exactly — solving both halves of "make my checkmark line up
+  // with the box that's already in my document" in one move.
+  //
+  // Only actually snaps when the clicked item is a LONE glyph (trimmed
+  // string length <= 1) — verified (via pdf.js's own getTextContent on a
+  // constructed test PDF) that when a checkbox glyph and the label text
+  // right after it are drawn with no separator, pdf.js returns them as ONE
+  // text item spanning the full run (e.g. 176pt wide × 14pt tall for a
+  // checkbox + a few words). Snapping to THAT item's box centers the symbol
+  // at the run's horizontal midpoint — landing on the middle of the real
+  // words, not the checkbox at its start — which is exactly the "พื้นหลัง
+  // ทับตัวอักษร" (fill covering the text) bug this guards against. For any
+  // item longer than a single character, fall back to stamping at the exact
+  // point the person clicked, at the palette's own configured size — same
+  // as clicking blank space.
+  async function stampSymbolOnExistingItem(div, item, e){
+    if(!workingBytes) return;
+    const str = (item && item.str) || "";
+    const isLoneGlyph = str.trim().length <= 1;
+    if(!isLoneGlyph){
+      const rect = canvasEl.getBoundingClientRect();
+      if(!rect.width || !rect.height) return;
+      const scaleX = canvasEl.width / rect.width;
+      const scaleY = canvasEl.height / rect.height;
+      const px = (e.clientX - rect.left) * scaleX;
+      const py = (e.clientY - rect.top) * scaleY;
+      const xPdf = px / pageScale + pageOriginX;
+      const yPdf = (canvasEl.height - py) / pageScale + pageOriginY;
+      await stampSymbolAt(xPdf, yPdf);
+      return;
+    }
+    const rect = div.getBoundingClientRect();
+    const canvasRect = canvasEl.getBoundingClientRect();
+    if(!rect.width || !rect.height || !canvasRect.width || !canvasRect.height) return;
+    const scaleX = canvasEl.width / canvasRect.width;
+    const scaleY = canvasEl.height / canvasRect.height;
+    const cx = (rect.left + rect.width/2 - canvasRect.left) * scaleX;
+    const cy = (rect.top + rect.height/2 - canvasRect.top) * scaleY;
+    const xPdf = cx / pageScale + pageOriginX;
+    const yPdf = (canvasEl.height - cy) / pageScale + pageOriginY;
+    // min(width,height) in PDF points, so the stamped symbol fits fully
+    // inside the existing box's shorter dimension rather than overflowing
+    // it; a small floor guards against a degenerate/near-zero item box.
+    const boxSizePdf = Math.min(rect.width * scaleX, rect.height * scaleY) / pageScale;
+    const size = Math.max(6, boxSizePdf);
+    await stampSymbol(xPdf, yPdf, size, lastSymbolColor);
+  }
+
+  function closeSymbolPopover(){
+    symbolPopoverTarget = null;
+    if(symbolPopoverEl) symbolPopoverEl.hidden = true;
+  }
+
+  function openSymbolDeleteConfirm(meta, key){
+    if(!symbolPopoverEl) return;
+    closePopover();
+    symbolPopoverTarget = { meta, key };
+    const margin = 10;
+    const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
+    const anchorLeft = (boxX - pageOriginX) * pageScale;
+    const anchorTop = canvasEl.height - ((boxY + meta.size) - pageOriginY) * pageScale;
+    symbolPopoverEl.hidden = false;
+    const pw = symbolPopoverEl.offsetWidth || 160, ph = symbolPopoverEl.offsetHeight || 44;
+    let left = Math.min(Math.max(margin, anchorLeft), Math.max(margin, canvasEl.width - pw - margin));
+    let top = anchorTop + (meta.size * pageScale) + 6;
+    if(top + ph > canvasEl.height - margin) top = anchorTop - ph - 6;
+    top = Math.min(Math.max(margin, top), Math.max(margin, canvasEl.height - ph - margin));
+    symbolPopoverEl.style.left = left + "px";
+    symbolPopoverEl.style.top = top + "px";
+  }
+
+  // Deleting a placed symbol works the same way as this module's cover-box
+  // text erase: symbols are vector graphics baked straight into the content
+  // stream (not text runs), so there's no Tj/TJ operator for ContentEditor
+  // to surgically remove — instead this covers the symbol's bounding box
+  // (plus a small pad, since stroke-only shapes like the checkmark/arrow
+  // draw slightly outside their nominal box) with a sampled background color.
+  async function deleteInsertedSymbol(key, meta){
+    if(!workingDoc) return;
+    setStatus(status, "กำลังลบสัญลักษณ์...", "loading");
+    try{
+      // pushUndoSnapshot() must run BEFORE insertedSymbols is mutated — it
+      // captures the map's current state for undo, same "snapshot before
+      // mutating" rule as every other edit path in this module. Deleting
+      // from the map first (as an earlier version of this function did)
+      // silently broke undo: the snapshot ended up capturing the
+      // already-deleted state, so undoing a delete never brought the
+      // symbol's overlay box back even though the PDF bytes reverted fine.
+      pushUndoSnapshot();
+      insertedSymbols.delete(key);
+      workingDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
+      workingDoc.registerFontkit(fontkit);
+      qeFontCache = {};
+      const page = workingDoc.getPage(currentPage - 1);
+      const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
+      const fill = sampleBgColorForBox(boxX, boxY, meta.size);
+      const pad = Math.max(1, meta.size * 0.08);
+      page.drawRectangle({
+        x: boxX - pad, y: boxY - pad,
+        width: meta.size + pad*2, height: meta.size + pad*2,
+        color: rgb(fill.r, fill.g, fill.b),
+      });
+      workingBytes = await workingDoc.save();
+      await renderCurrentPage();
+      setStatus(status, "ลบสัญลักษณ์แล้ว", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
   }
 
   async function applyInsert(){
@@ -2660,10 +3125,16 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   async function moveInsertedText(oldKey, item, newX, newY){
     const meta = insertedMeta.get(oldKey);
     if(!meta || !workingDoc) return;
-    insertedMeta.delete(oldKey);
     setStatus(status, "กำลังย้ายข้อความ...", "loading");
     try{
+      // pushUndoSnapshot() must run BEFORE insertedMeta is mutated (see the
+      // identical fix + explanation on deleteInsertedSymbol below) — deleting
+      // the old key first, as this used to, made undo restore a snapshot
+      // that was already missing it, so dragging text and then hitting undo
+      // silently un-tracked that box (it reverted visually but lost drag/
+      // re-edit tracking). Same root cause, same fix: snapshot first.
       pushUndoSnapshot();
+      insertedMeta.delete(oldKey);
       // Same reload-fresh-before-mutating rule as every other edit path in
       // this module — see the comment on applyBtn.onclick below.
       workingDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
@@ -2703,18 +3174,107 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }
   }
 
-  applyBtn.onclick = async ()=>{
-    if(insertPos){ await applyInsert(); return; }
-    if(!activeItem || !workingDoc) return;
-    const item = activeItem;
-    const newText = textarea.value;
-    const size = parseFloat(fontsizeInput.value) || Math.hypot(item.transform[2], item.transform[3]) || 12;
+  // Drag-to-reposition for placed symbols — same pointer-capture pattern as
+  // wireDrag/moveInsertedText above (see its comment), reused for the
+  // qe-symbol-box overlays created in renderCurrentPage. Every entry in
+  // insertedSymbols is something this module itself drew, so — unlike text,
+  // where only insertedMeta-tracked boxes are draggable — every placed
+  // symbol is draggable.
+  function wireSymbolDrag(div, key, meta){
+    div.style.touchAction = "none";
+    div.addEventListener("pointerdown", (e)=>{
+      if(e.button !== 0) return;
+      e.stopPropagation();
+      const startX = e.clientX, startY = e.clientY;
+      const baseTransform = div.style.transform;
+      const rect = canvasEl.getBoundingClientRect();
+      if(!rect.width || !rect.height) return;
+      const scaleX = canvasEl.width / rect.width;
+      const scaleY = canvasEl.height / rect.height;
+      let dragging = false;
+      div.setPointerCapture(e.pointerId);
+
+      function onMove(ev){
+        const dxCss = ev.clientX - startX, dyCss = ev.clientY - startY;
+        if(!dragging && Math.hypot(dxCss, dyCss) < DRAG_THRESHOLD) return;
+        dragging = true;
+        div.classList.add("qe-symbol-box-dragging");
+        div.style.transform = baseTransform + " translate(" + dxCss + "px, " + dyCss + "px)";
+      }
+      function onUp(ev){
+        div.removeEventListener("pointermove", onMove);
+        div.removeEventListener("pointerup", onUp);
+        div.removeEventListener("pointercancel", onUp);
+        div.classList.remove("qe-symbol-box-dragging");
+        if(!dragging) return; // plain click — let the normal click handler (delete confirm) run
+        suppressNextClick = true;
+        const dxCss = ev.clientX - startX, dyCss = ev.clientY - startY;
+        const dxPdf = (dxCss * scaleX) / pageScale;
+        const dyPdf = -(dyCss * scaleY) / pageScale; // screen Y grows down, PDF Y grows up
+        const pageWidthPdf = canvasEl.width / pageScale, pageHeightPdf = canvasEl.height / pageScale;
+        const newX = Math.max(pageOriginX, Math.min(pageOriginX + pageWidthPdf - 2, meta.x + dxPdf));
+        const newY = Math.max(pageOriginY, Math.min(pageOriginY + pageHeightPdf - 2, meta.y + dyPdf));
+        moveInsertedSymbol(key, meta, newX, newY);
+      }
+      div.addEventListener("pointermove", onMove);
+      div.addEventListener("pointerup", onUp);
+      div.addEventListener("pointercancel", onUp);
+    });
+  }
+
+  async function moveInsertedSymbol(oldKey, meta, newX, newY){
+    if(!workingDoc) return;
+    setStatus(status, "กำลังย้ายสัญลักษณ์...", "loading");
+    try{
+      // Snapshot BEFORE mutating insertedSymbols — see the comment on
+      // deleteInsertedSymbol below for why this order matters.
+      pushUndoSnapshot();
+      insertedSymbols.delete(oldKey);
+      workingDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
+      workingDoc.registerFontkit(fontkit);
+      qeFontCache = {};
+      const page = workingDoc.getPage(currentPage - 1);
+      // Erase the old position the same way deleteInsertedSymbol does (a
+      // sampled-background cover rectangle — these are vector graphics, not
+      // a text run, so there's no Tj/TJ operator to surgically remove).
+      const oldBoxX = meta.x - meta.size/2, oldBoxY = meta.y - meta.size/2;
+      const fill = sampleBgColorForBox(oldBoxX, oldBoxY, meta.size);
+      const pad = Math.max(1, meta.size * 0.08);
+      page.drawRectangle({
+        x: oldBoxX - pad, y: oldBoxY - pad,
+        width: meta.size + pad*2, height: meta.size + pad*2,
+        color: rgb(fill.r, fill.g, fill.b),
+      });
+      const spec = SYMBOL_SPECS[meta.symbolKey];
+      const { r, g, b } = hexToRgb01(meta.color);
+      if(spec) spec.draw(page, newX - meta.size/2, newY - meta.size/2, meta.size, rgb(r, g, b));
+      workingBytes = await workingDoc.save();
+      insertedSymbols.set(originKey(newX, newY), Object.assign({}, meta, { x: newX, y: newY }));
+      await renderCurrentPage();
+      setStatus(status, "ย้ายสัญลักษณ์แล้ว", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
+  }
+
+  // Shared by both the "บันทึก" (save) button and the "ลบข้อความนี้" (delete)
+  // button — passing an empty string is exactly what already happens when a
+  // user manually clears the textarea and hits save: the erase step below
+  // still runs (true content-stream removal, or a background-matched cover
+  // rectangle as fallback) but the "draw new text" step is skipped, so the
+  // box is genuinely gone with nothing put back in its place. The delete
+  // button exists only to make that already-working behavior discoverable —
+  // it does not need any new erasure logic of its own.
+  // `item` is passed in explicitly (rather than read from the module-level
+  // `activeItem`) because the caller already calls closePopover() — which
+  // nulls activeItem — before this runs, so the item to edit/erase has to be
+  // captured first and handed down instead.
+  async function applyEdit(item, newText){
+    if(!item || !workingDoc) return;
     const italic = !!(italicCheckbox && italicCheckbox.checked);
     const underline = !!(underlineCheckbox && underlineCheckbox.checked);
     const align = getSelectedAlign();
-    lastItalic = italic; lastUnderline = underline; lastAlign = align;
-    closePopover();
-    setStatus(status, "กำลังบันทึกการแก้ไข...", "loading");
+    const size = parseFloat(fontsizeInput.value) || Math.hypot(item.transform[2], item.transform[3]) || 12;
     try{
       const tx = item.transform;
       const x = tx[4], yBaseline = tx[5];
@@ -2783,18 +3343,55 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       }
       workingBytes = await workingDoc.save();
       await renderCurrentPage();
-      setStatus(status, fontWarning ? ("บันทึกการแก้ไขแล้ว (" + fontWarning + ")") : "บันทึกการแก้ไขแล้ว", fontWarning ? "warn" : "ok");
+      const savedMsg = newText.trim() === "" ? "ลบข้อความแล้ว" : "บันทึกการแก้ไขแล้ว";
+      setStatus(status, fontWarning ? (savedMsg + " (" + fontWarning + ")") : savedMsg, fontWarning ? "warn" : "ok");
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
     }
+  }
+
+  applyBtn.onclick = async ()=>{
+    if(insertPos){ await applyInsert(); return; }
+    if(!activeItem || !workingDoc) return;
+    const item = activeItem;
+    const newText = textarea.value;
+    lastItalic = !!(italicCheckbox && italicCheckbox.checked);
+    lastUnderline = !!(underlineCheckbox && underlineCheckbox.checked);
+    lastAlign = getSelectedAlign();
+    closePopover();
+    setStatus(status, "กำลังบันทึกการแก้ไข...", "loading");
+    await applyEdit(item, newText);
+  };
+  deleteBtn.onclick = async ()=>{
+    if(!activeItem || !workingDoc) return;
+    const item = activeItem;
+    lastItalic = !!(italicCheckbox && italicCheckbox.checked);
+    lastUnderline = !!(underlineCheckbox && underlineCheckbox.checked);
+    lastAlign = getSelectedAlign();
+    closePopover();
+    setStatus(status, "กำลังลบข้อความ...", "loading");
+    await applyEdit(item, "");
   };
   cancelBtn.onclick = closePopover;
   document.addEventListener("click", (e)=>{
     if(!popover.hidden && !popover.contains(e.target) && !e.target.closest(".qe-box")){
       closePopover();
     }
+    if(symbolPopoverEl && !symbolPopoverEl.hidden && !symbolPopoverEl.contains(e.target) && !e.target.closest(".qe-symbol-box")){
+      closeSymbolPopover();
+    }
   });
   popover.addEventListener("click", (e)=> e.stopPropagation());
+  if(symbolPopoverEl) symbolPopoverEl.addEventListener("click", (e)=> e.stopPropagation());
+  if(symbolCancelBtn) symbolCancelBtn.onclick = closeSymbolPopover;
+  if(symbolDeleteBtn){
+    symbolDeleteBtn.onclick = async ()=>{
+      if(!symbolPopoverTarget) return;
+      const { meta, key } = symbolPopoverTarget;
+      closeSymbolPopover();
+      await deleteInsertedSymbol(key, meta);
+    };
+  }
 
   resetBtn.onclick = async ()=>{
     if(!originalBuffer) return;
@@ -2807,6 +3404,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingBytes = originalBuffer.slice(0);
       currentPage = 1;
       insertedMeta.clear();
+      insertedSymbols.clear();
       await renderCurrentPage();
       setStatus(status, "เริ่มใหม่จากไฟล์เดิมแล้ว", "ok");
     }catch(e){
@@ -2818,7 +3416,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     undoBtn.onclick = async ()=>{
       if(!undoStack.length || !workingBytes) return;
       const snapshot = undoStack.pop();
-      redoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), page: currentPage });
+      redoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), insertedSymbols: cloneInsertedSymbols(), page: currentPage });
       refreshHistoryButtons();
       setStatus(status, "กำลังเลิกทำ...", "loading");
       try{
@@ -2833,7 +3431,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     redoBtn.onclick = async ()=>{
       if(!redoStack.length || !workingBytes) return;
       const snapshot = redoStack.pop();
-      undoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), page: currentPage });
+      undoStack.push({ bytes: workingBytes.slice(0), insertedMeta: cloneInsertedMeta(), insertedSymbols: cloneInsertedSymbols(), page: currentPage });
       refreshHistoryButtons();
       setStatus(status, "กำลังทำซ้ำ...", "loading");
       try{
@@ -2901,6 +3499,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const RENDER_WIDTH = 720;
   let originalBuffer = null, fileName = "document";
   let currentPage = 1, numPages = 1, pageScale = 1;
+  // The currently-rendered page's pdf.js viewport (rotation-aware — see
+  // renderPageCanvas's comment) and its /Rotate value, needed to correctly
+  // convert the overlay's on-screen position back into the PDF page's own
+  // raw coordinate space when a placement is added (see addPlacementFromOverlay).
+  let currentViewport = null, currentPageRotation = 0;
   let sigImageBytes = null, sigImageMime = null, sigImageAspect = 1, sigImageUrl = null;
   let rawImageBytes = null, rawImageMime = null; // the file exactly as uploaded, kept around so the bg-removal toggle can be flipped back and forth without re-uploading
   let placements = [];
@@ -3067,8 +3670,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
 
   async function renderCurrentPage(keepOverlay){
-    const { canvas, numPages: n, scale } = await renderPageCanvas(originalBuffer, currentPage, RENDER_WIDTH);
-    numPages = n; pageScale = scale;
+    const { canvas, numPages: n, scale, viewport, pjsPage } = await renderPageCanvas(originalBuffer, currentPage, RENDER_WIDTH);
+    numPages = n; pageScale = scale; currentViewport = viewport; currentPageRotation = pjsPage.rotate || 0;
     canvasEl.width = canvas.width; canvasEl.height = canvas.height;
     canvasEl.getContext("2d").drawImage(canvas, 0, 0);
     stageEl.style.width = canvas.width + "px";
@@ -3242,19 +3845,61 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   document.addEventListener("pointerup", onPointerUp);
   document.addEventListener("pointercancel", onPointerUp);
 
+  // Converts a rectangle given in rendered/on-screen pixel space (left/top
+  // from the canvas's own top-left corner, matching overlayEl's CSS
+  // left/top/width/height) into the page's TRUE, un-rotated PDF point-space
+  // bounding box, using the pdf.js viewport's own (already-correct, already
+  // rotation-aware) transform rather than a plain divide-by-scale. This is
+  // the fix for a real report (2026-09-25): a signature dragged to a precise
+  // spot in the editor landed somewhere completely different in the
+  // downloaded PDF. Root cause: pdf.js's rendered canvas is always rotation-
+  // COMPENSATED (rendered upright, matching what the user sees and drags
+  // against — this is why the bug wasn't visible while editing), but
+  // pdf-lib's page.drawImage() always draws in the page's RAW, un-rotated
+  // coordinate frame. Dividing pixel coordinates by `scale` alone (the old
+  // code) silently assumes zero rotation and is correct only for pages with
+  // no /Rotate value — for any rotated page it misplaces whatever is drawn.
+  // convertToPdfPoint is pdf.js's own well-tested inverse of that same
+  // transform, so this bridges the two coordinate spaces correctly for
+  // every rotation (0/90/180/270).
+  function overlayRectToPdfBBox(pxLeft, pxTop, pxW, pxH, viewport){
+    const [ax, ay] = viewport.convertToPdfPoint(pxLeft, pxTop + pxH);
+    const [bx, by] = viewport.convertToPdfPoint(pxLeft + pxW, pxTop);
+    return {
+      x: Math.min(ax, bx), y: Math.min(ay, by),
+      width: Math.abs(bx - ax), height: Math.abs(by - ay),
+    };
+  }
+
+  // Given a target bounding box [X0,Y0,W,H] in the page's raw (un-rotated)
+  // PDF-point space, returns the {x,y,width,height,rotate} to pass to
+  // pdf-lib's page.drawImage() so the drawn image's bounding box lands
+  // exactly on that target AND appears upright once the page's own /Rotate
+  // is applied for viewing (pdf-lib draws translate(x,y) -> rotate(CCW) ->
+  // scale(width,height); since a PDF's /Rotate is applied CLOCKWISE for
+  // display, counter-rotating here by the same angle cancels out, leaving
+  // the image upright — verified numerically for all 4 angles against
+  // pdf-lib's actual operator order and pdf.js's actual viewport transform,
+  // not just derived on paper).
+  function rotatedDrawImageParams(X0, Y0, W, H, rotationDeg){
+    const angle = ((rotationDeg % 360) + 360) % 360;
+    switch(angle){
+      case 90:  return { x: X0 + W, y: Y0, width: H, height: W, rotate: 90 };
+      case 180: return { x: X0 + W, y: Y0 + H, width: W, height: H, rotate: 180 };
+      case 270: return { x: X0, y: Y0 + H, width: H, height: W, rotate: 270 };
+      default:  return { x: X0, y: Y0, width: W, height: H, rotate: 0 };
+    }
+  }
+
   addBtn.onclick = ()=>{
     if(!originalBuffer){ setStatus(status, "กรุณาอัปโหลดไฟล์ PDF ก่อน", "err"); return; }
     if(!sigImageBytes){ setStatus(status, "กรุณาอัปโหลดรูปลายเซ็นก่อน", "err"); return; }
     const pxLeft = parseFloat(overlayEl.style.left) || 0;
     const pxTop = parseFloat(overlayEl.style.top) || 0;
     const pxW = overlayEl.offsetWidth, pxH = overlayEl.offsetHeight;
-    const pageHeightPt = canvasEl.height / pageScale;
-    const pdfX = pxLeft / pageScale;
-    const pdfW = pxW / pageScale;
-    const pdfH = pxH / pageScale;
-    const pdfYFromTop = pxTop / pageScale;
-    const pdfY = pageHeightPt - pdfYFromTop - pdfH;
-    placements.push({ page: currentPage, x: pdfX, y: pdfY, width: pdfW, height: pdfH });
+    const bbox = overlayRectToPdfBBox(pxLeft, pxTop, pxW, pxH, currentViewport);
+    const params = rotatedDrawImageParams(bbox.x, bbox.y, bbox.width, bbox.height, currentPageRotation);
+    placements.push({ page: currentPage, ...params });
     renderPlacementsList();
     setStatus(status, `เพิ่มลายเซ็นในหน้า ${currentPage} แล้ว`, "ok");
   };
@@ -3280,19 +3925,29 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const fracH = pxH / canvasEl.height;
     setStatus(status, "กำลังใช้ตำแหน่งนี้กับทุกหน้า...", "loading");
     try{
-      let doc = await PDFDocument.load(originalBuffer.slice(0), { ignoreEncryption: true });
-      ({ doc } = await autoDecryptIfNeeded(doc, originalBuffer));
-      const total = doc.getPageCount();
+      // Reads each target page through pdf.js (not pdf-lib's getSize(), which
+      // only ever returns the page's raw, un-rotated MediaBox) so a page
+      // with its own /Rotate value gets the same rotation-aware treatment
+      // as the single-page "เพิ่มลายเซ็นในหน้านี้" button — see
+      // overlayRectToPdfBBox/rotatedDrawImageParams's comments for why this
+      // matters. The fraction is of the CURRENT page's own visual (already
+      // rotation-compensated) size, which is what the user actually saw
+      // while dragging, then re-applied to each target page's own visual
+      // size before converting back to that page's raw coordinate space.
+      const pjsDoc = await pdfjsLib.getDocument({ data: originalBuffer.slice(0) }).promise;
+      const total = pjsDoc.numPages;
       const prevCount = placements.length;
       placements = [];
       for(let i = 0; i < total; i++){
-        const { width: pw, height: ph } = doc.getPage(i).getSize();
-        const pdfW = fracW * pw;
-        const pdfH = fracH * ph;
-        const pdfX = fracLeft * pw;
-        const pdfYFromTop = fracTop * ph;
-        const pdfY = ph - pdfYFromTop - pdfH;
-        placements.push({ page: i + 1, x: pdfX, y: pdfY, width: pdfW, height: pdfH });
+        const pjsPage = await pjsDoc.getPage(i + 1);
+        const viewport = pjsPage.getViewport({ scale: 1 });
+        const pxLeft_i = fracLeft * viewport.width;
+        const pxTop_i = fracTop * viewport.height;
+        const pxW_i = fracW * viewport.width;
+        const pxH_i = fracH * viewport.height;
+        const bbox = overlayRectToPdfBBox(pxLeft_i, pxTop_i, pxW_i, pxH_i, viewport);
+        const params = rotatedDrawImageParams(bbox.x, bbox.y, bbox.width, bbox.height, pjsPage.rotate || 0);
+        placements.push({ page: i + 1, ...params });
       }
       renderPlacementsList();
       const replacedNote = prevCount ? ` (แทนที่ตำแหน่งเดิม ${prevCount} ตำแหน่ง)` : "";
@@ -3313,7 +3968,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       const img = sigImageMime === "image/jpeg" ? await doc.embedJpg(sigImageBytes) : await doc.embedPng(sigImageBytes);
       placements.forEach(p=>{
         const page = doc.getPage(p.page - 1);
-        page.drawImage(img, { x: p.x, y: p.y, width: p.width, height: p.height });
+        // p.rotate comes from rotatedDrawImageParams — required so the
+        // signature ends up positioned AND oriented correctly on a page
+        // that has its own /Rotate value (see that function's comment).
+        page.drawImage(img, { x: p.x, y: p.y, width: p.width, height: p.height, rotate: degrees(p.rotate || 0) });
       });
       const bytes = await doc.save();
       downloadBlob(new Blob([bytes], { type: "application/pdf" }), resolveFilename(filenameInput, `${fileName}_signed`, ".pdf"));
@@ -3877,8 +4535,6 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const numwarnEl = document.getElementById("ocr-numwarn");
   const numwarnTextEl = document.getElementById("ocr-numwarn-text");
   const result = document.getElementById("ocr-result");
-  const downloadBtn = document.getElementById("ocr-download");
-  const downloadLabelEl = document.getElementById("ocr-download-label");
   const downloadTextBtn = document.getElementById("ocr-download-text");
   const filenameInput = document.getElementById("ocr-filename-input");
   const filenameExtEl = document.getElementById("ocr-filename-ext");
@@ -3888,7 +4544,6 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // one file at a time — `items` holds the whole batch. Each entry tracks
   // its own progress/result so one bad file doesn't block the rest.
   let items = [];
-  let outputBlob = null, outputExt = ".pdf", outputBase = "document";
   // Text-only export ("ดาวน์โหลดข้อความ (.docx)") is built lazily, only when
   // the user actually clicks that button — it reuses the text each page's
   // `it.pageTexts` already collected during the OCR run below, so no re-OCR
@@ -3899,7 +4554,30 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   let isRunning = false;
   let cancelRequested = false;
 
-  const OCR_RENDER_WIDTH = 1800;
+  // Two different render targets, chosen per PAGE based on whether it
+  // already carries some extractable text (see hasVectorText below):
+  //
+  // - A page with NO extractable text at all is a genuine scanned/
+  //   photographed image — every pixel of fine detail can matter, so it
+  //   keeps the historical ~216 DPI render this menu always used.
+  // - A page that already has SOME text objects (the dominant real case
+  //   this menu sees in practice — Thai accounting/ERP-exported PDFs whose
+  //   embedded font has a broken/garbled ToUnicode map, so the text is
+  //   there but unusable — see the "every page always gets the real OCR
+  //   treatment" comment below) is a crisp vector render, not a
+  //   photograph. Empirically — an 11-point DPI sweep scored line-by-line
+  //   against a hand-verified Thai business-letter transcript — the
+  //   bundled Tesseract LSTM model reads these MUCH more accurately at a
+  //   LOWER render size: ~120 DPI beat the old ~216 DPI default by a wide
+  //   margin (avg line-similarity 0.85 vs 0.79 across 26 reference lines),
+  //   fixing exactly the "missing tone mark" / "ว read as จ" pattern
+  //   reported against this menu. This is the opposite of the usual
+  //   "300 DPI is best" scanning advice, but that advice targets noisy
+  //   photographed pages, not a clean vector render — an LSTM model's
+  //   accuracy isn't scale-invariant, and this one reads best near the
+  //   glyph size it was trained on, not the largest we can render.
+  const OCR_DPI_SCANNED = 216;
+  const OCR_DPI_VECTOR = 120;
   const PAGE_TIMEOUT_MS = 60000;
   // Below this confidence (0-100), a token that looks like a number/amount
   // gets flagged for the accountant to double-check by eye — misreading a
@@ -3940,6 +4618,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const cleaned = text.replace(/[,\s]/g, "");
     return /\d/.test(cleaned) && /^[+\-]?\d[\d.]*$/.test(cleaned);
   }
+
+  // dedupeOcrLines is now a shared top-level function (see near
+  // stripXmlIllegalChars) — the "PDF to WORD" menu's broken-text-layer OCR
+  // fallback needs the exact same ghost-line dedup logic, so it was moved
+  // out of this closure rather than duplicated.
 
   function renderList(){
     filelist.innerHTML = "";
@@ -4083,9 +4766,22 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
             // Tesseract sidesteps that broken metadata entirely and is far
             // more reliable, so there is no "skip this page" fast path
             // anymore — every page always gets the real OCR treatment.
+            //
+            // That existing text layer is still worth a quick, cheap peek
+            // at, though — not to use its (possibly garbled) text, but to
+            // tell whether this page is a crisp vector render (has text
+            // objects at all, even broken ones) or a genuine scanned/
+            // photographed image (no text objects). The two get rendered
+            // at different resolutions — see OCR_DPI_VECTOR's comment above.
+            let hasVectorText = false;
+            try{
+              const existingTextContent = await pjsPage.getTextContent();
+              hasVectorText = existingTextContent.items.some(ti=> (ti.str || "").trim().length > 0);
+            }catch(e){ /* couldn't even ask — treat as scanned, the safer default */ }
 
             const baseViewport = pjsPage.getViewport({ scale: 1 });
-            const scale = OCR_RENDER_WIDTH / baseViewport.width;
+            const targetDpi = hasVectorText ? OCR_DPI_VECTOR : OCR_DPI_SCANNED;
+            const scale = targetDpi / 72;
             const viewport = pjsPage.getViewport({ scale });
             const canvas = document.createElement("canvas");
             canvas.width = viewport.width; canvas.height = viewport.height;
@@ -4106,11 +4802,6 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
               continue;
             }
             if(typeof data.confidence === "number"){ confSum += data.confidence; confCount++; }
-            // Tesseract's own full-page assembled text (already in correct
-            // reading order) — kept per-page for the text-only (.docx)
-            // export button, independent of the invisible PDF text layer
-            // drawn below from the same `data`.
-            it.pageTexts[i-1] = (data.text || "").trim();
 
             const pdfPage = pdfPages[i-1];
             const { width: pdfW, height: pdfH } = pdfPage.getSize();
@@ -4135,60 +4826,81 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
               }catch(e){ /* skip glyph the font can't encode */ }
             }
 
+            const rawLines = [];
             for(const block of (data.blocks || [])){
               for(const para of (block.paragraphs || [])){
                 for(const line of (para.lines || [])){
-                  // Low-confidence numeric flagging still needs per-word
-                  // text/confidence, so this scan stays at word granularity
-                  // even though the drawn text below is per LINE.
-                  for(const word of (line.words || [])){
-                    const wText = (word.text || "").trim();
-                    if(wText && typeof word.confidence === "number" && word.confidence < NUM_CONF_THRESHOLD && looksNumeric(wText)){
-                      it.lowConfFlags.push({ page: i, text: wText, confidence: Math.round(word.confidence) });
-                    }
-                  }
-
-                  // Draw the whole LINE as one invisible text object instead
-                  // of one per word. Tesseract often reports a Thai vowel or
-                  // tone mark (sitting above/below its base consonant, not
-                  // beside it) as its own separate "word" with a disjoint
-                  // bounding box. Drawing each of those as an independently
-                  // positioned PDF text run made copy/search reconstruct
-                  // them out of order — the text looked fine on screen (it's
-                  // invisible) but came out with garbled/reordered Thai
-                  // vowels when copied or searched. line.text is already
-                  // assembled by Tesseract in the correct logical order, so
-                  // drawing it once at the line's own bbox keeps every mark
-                  // attached to its consonant.
                   const text = (line.text || "").trim();
                   if(!text || !line.bbox) continue;
-                  const bbox = line.bbox;
-                  const wPt = (bbox.x1 - bbox.x0) * ptPerPx;
-                  const hPt = (bbox.y1 - bbox.y0) * ptPerPx;
-                  if(wPt <= 0 || hPt <= 0) continue;
-                  const xPt = bbox.x0 * ptPerPx;
-                  const yPt = pdfH - (bbox.y1 * ptPerPx);
-                  let size = hPt * 0.85;
-                  if(size < 1) size = 1;
-                  try{
-                    const font = await ensureOcrFont();
-                    const measured = font.widthOfTextAtSize(text, size);
-                    if(measured > 0){
-                      const ratio = wPt / measured;
-                      size = size * Math.max(0.5, Math.min(1.8, ratio));
-                    }
-                    if(size < 1) size = 1;
-                    pdfPage.drawText(text, { x: xPt, y: yPt, size, font, opacity: 0 });
-                  }catch(e){
-                    // Rare: some character on this line can't be encoded by
-                    // the embedded font (an odd symbol Tesseract hallucinated),
-                    // which fails the whole line's drawText call. Degrade to
-                    // per-word instead of losing the whole line's searchable
-                    // text — this is the one case where fragmenting is an
-                    // acceptable trade-off since drawing nothing is worse.
-                    for(const word of (line.words || [])) await drawInvisibleWord(word);
-                  }
+                  rawLines.push({
+                    text, bbox: line.bbox, words: line.words || [],
+                    confidence: (typeof line.confidence === "number" ? line.confidence : 0),
+                  });
                 }
+              }
+            }
+            // See dedupeOcrLines' own comment — drops low-fidelity "ghost"
+            // duplicates of a real line before anything below ever sees
+            // them, so neither the invisible PDF text nor the .docx export
+            // picks up their garbled text.
+            const keptLines = dedupeOcrLines(rawLines);
+
+            // Tesseract's own full-page assembled text is already in
+            // correct reading order, but includes every ghost/duplicate
+            // line filtered out above — rebuild the per-page text from the
+            // deduped lines instead, so the text-only (.docx) export
+            // benefits from the same cleanup as the invisible PDF text
+            // layer drawn below from the same list.
+            it.pageTexts[i-1] = keptLines.map(l=> l.text).join("\n");
+
+            for(const line of keptLines){
+              // Low-confidence numeric flagging still needs per-word
+              // text/confidence, so this scan stays at word granularity
+              // even though the drawn text below is per LINE.
+              for(const word of line.words){
+                const wText = (word.text || "").trim();
+                if(wText && typeof word.confidence === "number" && word.confidence < NUM_CONF_THRESHOLD && looksNumeric(wText)){
+                  it.lowConfFlags.push({ page: i, text: wText, confidence: Math.round(word.confidence) });
+                }
+              }
+
+              // Draw the whole LINE as one invisible text object instead
+              // of one per word. Tesseract often reports a Thai vowel or
+              // tone mark (sitting above/below its base consonant, not
+              // beside it) as its own separate "word" with a disjoint
+              // bounding box. Drawing each of those as an independently
+              // positioned PDF text run made copy/search reconstruct
+              // them out of order — the text looked fine on screen (it's
+              // invisible) but came out with garbled/reordered Thai
+              // vowels when copied or searched. line.text is already
+              // assembled by Tesseract in the correct logical order, so
+              // drawing it once at the line's own bbox keeps every mark
+              // attached to its consonant.
+              const bbox = line.bbox;
+              const wPt = (bbox.x1 - bbox.x0) * ptPerPx;
+              const hPt = (bbox.y1 - bbox.y0) * ptPerPx;
+              if(wPt <= 0 || hPt <= 0) continue;
+              const xPt = bbox.x0 * ptPerPx;
+              const yPt = pdfH - (bbox.y1 * ptPerPx);
+              let size = hPt * 0.85;
+              if(size < 1) size = 1;
+              try{
+                const font = await ensureOcrFont();
+                const measured = font.widthOfTextAtSize(line.text, size);
+                if(measured > 0){
+                  const ratio = wPt / measured;
+                  size = size * Math.max(0.5, Math.min(1.8, ratio));
+                }
+                if(size < 1) size = 1;
+                pdfPage.drawText(line.text, { x: xPt, y: yPt, size, font, opacity: 0 });
+              }catch(e){
+                // Rare: some character on this line can't be encoded by
+                // the embedded font (an odd symbol Tesseract hallucinated),
+                // which fails the whole line's drawText call. Degrade to
+                // per-word instead of losing the whole line's searchable
+                // text — this is the one case where fragmenting is an
+                // acceptable trade-off since drawing nothing is worse.
+                for(const word of line.words) await drawInvisibleWord(word);
               }
             }
 
@@ -4204,7 +4916,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           const avgConf = confCount ? Math.round(confSum/confCount) : null;
           const confPart = avgConf !== null ? ` · มั่นใจเฉลี่ย ~${avgConf}%` : "";
           const timeoutPart = timedOutCount ? ` (ข้าม ${timedOutCount} หน้าที่ใช้เวลานานเกินไป)` : "";
-          it.statsText = `OCR แล้ว <b>${ocredCount}</b> จาก <b>${total}</b> หน้า${timeoutPart}${confPart} · <b>${fmtBytes(it.outputBlob.size)}</b>`;
+          it.statsText = `OCR แล้ว <b>${ocredCount}</b> จาก <b>${total}</b> หน้า${timeoutPart}${confPart}`;
           it.status = cancelledThisFile ? "cancelled" : "done";
           it.statusText = (cancelledThisFile ? "✋ หยุดกลางคัน — " : "✓ เสร็จแล้ว — ") + `OCR ${ocredCount}/${total} หน้า${avgConf !== null ? ` (มั่นใจ ~${avgConf}%)` : ""}`;
         }catch(e){
@@ -4241,26 +4953,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         setStatus(status, cancelledOverall ? "หยุดก่อนได้ผลลัพธ์ใดๆ" : "เกิดข้อผิดพลาด ไม่มีไฟล์ที่ทำสำเร็จ", cancelledOverall ? "warn" : "err");
       }else if(items.length === 1){
         const it = doneItems[0];
-        outputBlob = it.outputBlob; outputExt = ".pdf"; outputBase = `${it.fileName}_ocr`;
-        filenameExtEl.textContent = outputExt;
-        downloadLabelEl.textContent = "ดาวน์โหลดไฟล์";
+        filenameExtEl.textContent = ".docx";
         filenameLabelEl.textContent = "ชื่อไฟล์ก่อนดาวน์โหลด";
-        setFilenameDefault(filenameInput, outputBase);
+        setFilenameDefault(filenameInput, `${it.fileName}_ocr_text`);
         result.querySelector(".stats").innerHTML = it.statsText;
         result.classList.add("show");
         setStatus(status, cancelledOverall ? "หยุดแล้ว (ดาวน์โหลดผลลัพธ์เท่าที่ทำไปแล้วได้)" : "OCR สำเร็จ", cancelledOverall ? "warn" : "ok");
       }else{
-        const zip = new JSZip();
-        doneItems.forEach(it=> zip.file(`${it.fileName}_ocr.pdf`, it.outputBlob));
-        outputBlob = await zip.generateAsync({ type:"blob" });
-        outputExt = ".zip"; outputBase = "ocr_results";
-        filenameExtEl.textContent = outputExt;
-        downloadLabelEl.textContent = "ดาวน์โหลดทั้งหมด (ZIP)";
+        filenameExtEl.textContent = ".zip";
         filenameLabelEl.textContent = "ชื่อไฟล์ ZIP ก่อนดาวน์โหลด";
-        setFilenameDefault(filenameInput, outputBase);
+        setFilenameDefault(filenameInput, "ocr_text_results");
         const totalOcred = doneItems.reduce((s,it)=> s + it.ocredCount, 0);
         const totalPagesDone = doneItems.reduce((s,it)=> s + it.total, 0);
-        result.querySelector(".stats").innerHTML = `สำเร็จ <b>${doneItems.length}</b> จาก <b>${items.length}</b> ไฟล์ · รวม <b>${totalOcred}</b>/<b>${totalPagesDone}</b> หน้า · <b>${fmtBytes(outputBlob.size)}</b>`;
+        result.querySelector(".stats").innerHTML = `สำเร็จ <b>${doneItems.length}</b> จาก <b>${items.length}</b> ไฟล์ · รวม <b>${totalOcred}</b>/<b>${totalPagesDone}</b> หน้า`;
         result.classList.add("show");
         setStatus(status, cancelledOverall ? "หยุดแล้ว (ดาวน์โหลดผลลัพธ์เท่าที่ทำไปแล้วได้)" : "OCR สำเร็จ", cancelledOverall ? "warn" : "ok");
       }
@@ -4282,8 +4987,6 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     setStatus(status, "กำลังหยุด... (จะหยุดหลังหน้าปัจจุบันทำเสร็จ หรือหมดเวลาของหน้านั้น)", "loading");
   };
 
-  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, outputBase, outputExt)); };
-
   // "ดาวน์โหลดข้อความ (.docx)" — a separate export that never touches the
   // PDF at all: just the text OCR (or the page's own existing text layer)
   // read, laid out as plain Word paragraphs (one page = one page-break).
@@ -4300,7 +5003,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       lines.forEach((line, li)=>{
         children.push(new Paragraph({
           pageBreakBefore: p > 0 && li === 0,
-          children: [ new TextRun({ text: line || " ", font: "Tahoma", size: 24 }) ],
+          children: [ new TextRun({ text: stripXmlIllegalChars(line) || " ", font: "Tahoma", size: 24 }) ],
         }));
       });
     }
@@ -4542,7 +5245,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       text += it.str;
       prevEndX = it.x + (it.width || it.str.length * it.fontSize * 0.5);
     }
-    return text.replace(/\s+$/, "");
+    // Some source PDFs have broken font ToUnicode/CMap tables that decode a
+    // glyph into a raw control byte instead of the intended character. Strip
+    // those before they can reach a docx TextRun (see stripXmlIllegalChars).
+    return stripXmlIllegalChars(text.replace(/\s+$/, ""));
   }
 
   // Detects a single stable vertical "gutter" (empty band) running through
@@ -4890,6 +5596,141 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return { table: core, preRows: rows.slice(0, curStart), postRows: rows.slice(curEnd + 1) };
   }
 
+  // Same DPI finding as the OCR menu's own OCR_DPI_VECTOR (empirically
+  // tuned there against a hand-verified transcript — Tesseract's bundled
+  // LSTM model reads a clean vector-rendered page best around ~120 DPI, not
+  // higher). Kept as this feature's own local constant rather than reaching
+  // into the OCR menu's closure (each menu is its own IIFE — see this
+  // file's module notes) to avoid coupling two independently-shippable
+  // features together.
+  const OCR_DPI_VECTOR = 120;
+
+  // --- Broken-text-layer OCR fallback -------------------------------------
+  // Some PDFs (see looksLikeBrokenThaiTextLayer's comment — the same defect
+  // class already known from "Thai accounting/ERP export tools" in the OCR
+  // menu) embed a text layer whose glyph positions are broken enough that
+  // pdf.js's own getTextContent() comes back with bogus spaces jammed into
+  // the middle of Thai words (confirmed 2026-09-25 against a real affected
+  // resume PDF, reproduced with the app's own bundled pdf.js version,
+  // independent of any of this feature's own row/spacing logic). The OCR
+  // menu already sidesteps this by always reading rendered pixels through
+  // Tesseract instead of trusting the text layer; "PDF to WORD" previously
+  // had no such defense at all. This lazily creates its own Tesseract
+  // worker (kept separate from the OCR menu's — that one's language choice
+  // is driven by its own checkboxes, this one always reads tha+eng) and
+  // OCRs just the pages that look broken, leaving normal pages on the fast,
+  // precise pdf.js text-layer path untouched.
+  let pdfWordOcrWorker = null;
+  async function ensurePdfWordOcrWorker(){
+    if(!pdfWordOcrWorker){
+      pdfWordOcrWorker = await Tesseract.createWorker("tha+eng", 1, {
+        workerPath: "vendor/tesseract/worker.min.js",
+        corePath: "vendor/tesseract/tesseract-core-lstm.wasm.js",
+        langPath: "vendor/tessdata/",
+        gzip: true,
+        workerBlobURL: false,
+        logger: ()=>{},
+      });
+    }
+    return pdfWordOcrWorker;
+  }
+
+  // Renders `page` and OCRs it, returning one entry per recognized LINE (not
+  // per word — Tesseract often reports a Thai vowel/tone mark as its own
+  // separate "word" with a disjoint bounding box, see dedupeOcrLines'
+  // sibling comment in the OCR menu, and rejoining those word-by-word
+  // through this feature's own x-gap heuristic would reintroduce the exact
+  // stray-space bug this fallback exists to fix — line.text is already
+  // assembled by Tesseract in correct logical order, so each line is kept
+  // as one unsplit string), each with a PDF-point-space y (top-down
+  // pageHeight-relative, matching row.y elsewhere in this feature) and x/
+  // width/fontSize so the caller can splice a line in to replace exactly
+  // one broken row — see the caller for why replacement is done per row
+  // rather than swapping the whole page's rows out at once.
+  async function ocrPageLines(page, pageWidth, pageHeight){
+    const worker = await ensurePdfWordOcrWorker();
+    const viewport = page.getViewport({ scale: OCR_DPI_VECTOR / 72 });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    const timeoutMs = 60000;
+    const recognized = await Promise.race([
+      worker.recognize(canvas, {}, { blocks: true, text: true }),
+      new Promise((_, reject)=> setTimeout(()=> reject(new Error("ocr timeout")), timeoutMs)),
+    ]);
+    const data = recognized.data;
+    const ptPerPx = pageWidth / canvas.width;
+    const rawLines = [];
+    for(const block of (data.blocks || [])){
+      for(const para of (block.paragraphs || [])){
+        for(const line of (para.lines || [])){
+          const text = (line.text || "").trim();
+          if(!text || !line.bbox) continue;
+          rawLines.push({ text, bbox: line.bbox, confidence: (typeof line.confidence === "number" ? line.confidence : 0) });
+        }
+      }
+    }
+    const keptLines = dedupeOcrLines(rawLines);
+    return keptLines.map(line=>{
+      const b = line.bbox;
+      const hPt = (b.y1 - b.y0) * ptPerPx;
+      const fontSize = Math.max(1, hPt * 0.85);
+      return { x: b.x0 * ptPerPx, y: pageHeight - (b.y1 * ptPerPx), str: line.text, width: (b.x1 - b.x0) * ptPerPx, fontSize };
+    });
+  }
+
+  // Replaces ONLY the rows that individually look broken (per
+  // looksLikeBrokenThaiTextLayer) with the nearest-by-y OCR'd line,
+  // mutating `rows` in place; every other row — including ones on the same
+  // page that pdf.js already read correctly — is left completely
+  // untouched. This is deliberately row-level, not page-level: an earlier
+  // version swapped a whole flagged page over to OCR wholesale, but
+  // real-world testing (a resume PDF, 2026-09-25) showed that throws away
+  // perfectly good text pdf.js already extracted correctly elsewhere on the
+  // same page (e.g. the person's name in a styled heading) in exchange for
+  // Tesseract's own, DIFFERENT misreadings there (bullet glyphs misread as
+  // Thai digits, an English word mangled, decorative icons hallucinated
+  // into garbage text) — a straight swap of one defect for another, not a
+  // net improvement, for text that was never broken in the first place.
+  // Matching by nearest y keeps the risk scoped to only the rows already
+  // known to be wrong; a match more than ~2 line-heights away is treated
+  // as unreliable and the original (still-broken) row is left in place
+  // rather than risk substituting the wrong line's text into it.
+  // Bullet glyphs (•, -, etc.) are exactly the kind of small isolated
+  // symbol Tesseract most often mis-recognizes (confirmed empirically:
+  // "•" came back as a Thai digit, a guillemet, or a plus sign across
+  // different lines of the same real test document) — but they're also
+  // trivial to recover losslessly, since the ORIGINAL (broken) row still
+  // has the real bullet character pdf.js read correctly. If the row we're
+  // about to patch started with a recognized bullet, and the OCR'd
+  // replacement's own leading character looks like exactly this kind of
+  // misread placeholder (a Thai digit or a stray punctuation/symbol glyph,
+  // never a real Thai or Latin letter), swap the original bullet back in
+  // rather than trusting Tesseract's guess for that one character.
+  const BULLET_CHAR_RE = /^[•●○▪◦‣·*\-–—]/;
+  const OCR_BULLET_MISREAD_RE = /^[๐-๙«»‹›+=~^_|]/;
+  function patchBrokenRowsWithOcr(rows, ocrLines){
+    if(!ocrLines.length) return;
+    rows.forEach(row=>{
+      const rowText = row.items.map(it=> it.str || "").join("");
+      if(!looksLikeBrokenThaiTextLayer(rowText)) return;
+      let best = null, bestDist = Infinity;
+      for(const line of ocrLines){
+        const dist = Math.abs(line.y - row.y);
+        if(dist < bestDist){ bestDist = dist; best = line; }
+      }
+      const tolerance = Math.max(6, (row.maxFontSize || 11) * 2);
+      if(!best || bestDist > tolerance) return;
+      let replacementText = best.str;
+      const origTrimmed = rowText.trimStart();
+      if(BULLET_CHAR_RE.test(origTrimmed) && OCR_BULLET_MISREAD_RE.test(replacementText)){
+        replacementText = origTrimmed[0] + replacementText.replace(OCR_BULLET_MISREAD_RE, "").replace(/^\s+/, " ");
+      }
+      row.items = [{ x: best.x, str: replacementText, width: best.width, fontSize: best.fontSize }];
+      row.maxFontSize = best.fontSize;
+    });
+  }
+
   runBtn.onclick = async ()=>{
     if(!buffer) return;
     runBtn.disabled = true;
@@ -4906,16 +5747,41 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // font size (used to guess which rows are heading-like).
       const pagesRows = [];
       let allFontSizes = [];
+      let brokenTextLayerPages = 0;
       for(let p=1; p<=numPages; p++){
         setStatus(status, `กำลังอ่านข้อความหน้า ${p}/${numPages}...`, "loading");
         const page = await pdfDoc.getPage(p);
         const textContent = await page.getTextContent();
-        const pageWidth = page.getViewport({ scale: 1 }).width;
+        const pageViewport1 = page.getViewport({ scale: 1 });
+        const pageWidth = pageViewport1.width, pageHeight = pageViewport1.height;
+        // See looksLikeBrokenThaiTextLayer's comment: a page whose own
+        // pdf.js text layer has this signature has at least SOME rows that
+        // can't be trusted. Build rows the normal way first, then patch
+        // only the individually-broken rows in with OCR — see
+        // patchBrokenRowsWithOcr's comment for why this stays row-level
+        // rather than discarding the whole page's pdf.js text.
         const { rows, splitIndex } = splitIntoColumnsAndGroupRows(textContent.items, pageWidth);
+        const rawPageText = textContent.items.map(it=> it.str || "").join("");
+        if(looksLikeBrokenThaiTextLayer(rawPageText) && typeof Tesseract !== "undefined"){
+          try{
+            setStatus(status, `กำลังอ่านข้อความหน้า ${p}/${numPages} ด้วย OCR (พบเลเยอร์ข้อความเสียหาย)...`, "loading");
+            const ocrLines = await ocrPageLines(page, pageWidth, pageHeight);
+            patchBrokenRowsWithOcr(rows, ocrLines);
+            brokenTextLayerPages++;
+          }catch(e){
+            // OCR fallback itself failed (e.g. timed out) — leave the
+            // original, possibly-garbled rows as they were rather than
+            // losing the page's text entirely.
+          }
+        }
         pagesRows.push({ rows, splitIndex });
         rows.forEach(r => allFontSizes.push(r.maxFontSize));
         progress.value = Math.round((p/numPages)*40);
         await new Promise(r=>setTimeout(r,0));
+      }
+      if(pdfWordOcrWorker){
+        try{ await pdfWordOcrWorker.terminate(); }catch(_e){}
+        pdfWordOcrWorker = null;
       }
 
       const totalChars = pagesRows.reduce((sum, p)=> sum + p.rows.reduce((s,r)=> s + joinRowText(r.items).length, 0), 0);
@@ -5021,9 +5887,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       result.querySelector(".stats").innerHTML = `ดึงข้อความแล้ว <b>${pagesWithText}</b>/<b>${numPages}</b> หน้า · <b>${totalChars.toLocaleString("th-TH")}</b> ตัวอักษร · <b>${fmtBytes(outputBlob.size)}</b>`;
       setFilenameDefault(filenameInput, fileName);
       result.classList.add("show");
-      setStatus(status, "แปลงเป็น Word สำเร็จ", "ok");
+      setStatus(status, "แปลงเป็น Word สำเร็จ" + (brokenTextLayerPages > 0 ? ` (${brokenTextLayerPages} หน้ามีข้อความบางจุดเสียหาย ระบบใช้ OCR ซ่อมแซมจุดนั้นให้แล้ว)` : ""), "ok");
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
+    if(pdfWordOcrWorker){
+      try{ await pdfWordOcrWorker.terminate(); }catch(_e){}
+      pdfWordOcrWorker = null;
     }
     progress.style.display = "none";
     runBtn.disabled = false;
@@ -5294,3 +6164,87 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, fileName, ".pdf")); };
 })();
 
+
+/* ================= QR CODE ================= */
+// Standalone utility — unlike every other menu, it does not touch a PDF at
+// all: text/URL in, a PNG image out. Uses the vendored "qrcode" library
+// (github.com/soldair/node-qrcode, bundled+minified locally so it works
+// under this app's CSP and 100%-offline/client-side guarantee — see
+// vendor/qrcode.min.js), lazy-loaded on first use like docx/xlsx/html2canvas
+// elsewhere in this file.
+(function(){
+  const textEl = document.getElementById("qrcode-text");
+  const sizeEl = document.getElementById("qrcode-size");
+  const eclEl = document.getElementById("qrcode-ecl");
+  const runBtn = document.getElementById("qrcode-run");
+  const clearBtn = document.getElementById("qrcode-clear");
+  const status = document.getElementById("qrcode-status");
+  const previewWrap = document.getElementById("qrcode-preview-wrap");
+  const canvas = document.getElementById("qrcode-canvas");
+  const result = document.getElementById("qrcode-result");
+  const downloadBtn = document.getElementById("qrcode-download");
+  const filenameInput = document.getElementById("qrcode-filename-input");
+  let hasOutput = false;
+  // Captured once at load, from the HTML's own defaults — used by "ล้างค่า"
+  // so the reset stays in sync if the markup's default size/ECL ever change.
+  const DEFAULT_SIZE = sizeEl.value;
+  const DEFAULT_ECL = eclEl.value;
+
+  runBtn.onclick = async ()=>{
+    const text = (textEl.value || "").trim();
+    if(!text){
+      setStatus(status, "กรุณาพิมพ์ข้อความหรือลิงก์ก่อนสร้าง QR Code", "err");
+      textEl.focus();
+      return;
+    }
+    runBtn.disabled = true;
+    setStatus(status, "กำลังสร้าง QR Code...", "loading");
+    try{
+      await loadScriptOnce("vendor/qrcode.min.js");
+      let size = parseInt(sizeEl.value, 10);
+      if(!size || size < 128) size = 128;
+      if(size > 2000) size = 2000;
+      const ecl = eclEl.value || "M";
+      await QRCode.toCanvas(canvas, text, {
+        width: size,
+        margin: 2,
+        errorCorrectionLevel: ecl,
+        color: { dark: "#000000ff", light: "#ffffffff" },
+      });
+      previewWrap.style.display = "flex";
+      const blob = await new Promise(resolve=> canvas.toBlob(resolve, "image/png"));
+      result.querySelector(".stats").innerHTML = `<b>${size}×${size}</b> พิกเซล · <b>${fmtBytes(blob.size)}</b>`;
+      canvas._downloadBlob = blob;
+      hasOutput = true;
+      setFilenameDefault(filenameInput, "qrcode");
+      result.classList.add("show");
+      setStatus(status, "สร้าง QR Code สำเร็จ — ลองสแกนทดสอบก่อนนำไปใช้งานจริง", "ok");
+    }catch(e){
+      hasOutput = false;
+      previewWrap.style.display = "none";
+      result.classList.remove("show");
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
+    runBtn.disabled = false;
+  };
+
+  downloadBtn.onclick = ()=>{
+    if(!hasOutput || !canvas._downloadBlob) return;
+    downloadBlob(canvas._downloadBlob, resolveFilename(filenameInput, "qrcode", ".png"));
+  };
+
+  clearBtn.onclick = ()=>{
+    textEl.value = "";
+    sizeEl.value = DEFAULT_SIZE;
+    eclEl.value = DEFAULT_ECL;
+    filenameInput.value = "";
+    previewWrap.style.display = "none";
+    result.classList.remove("show");
+    setStatus(status, "", "");
+    hasOutput = false;
+    canvas._downloadBlob = null;
+    const ctx = canvas.getContext("2d");
+    if(ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    textEl.focus();
+  };
+})();

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<script src="theme-init.js?v=20260910a"></script>
+<script src="theme-init.js?v=20260918a"></script>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
-<title>iEditPDF</title>
+<title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20260910l" />
+<link rel="stylesheet" href="style.css?v=20260925a" />
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="header-text">
-      <img class="logo-img" src="vendor/img/ieditpdf-logo.png?v=20260910a" alt="iEditPDF" width="1540" height="428" />
+      <img class="logo-img" src="vendor/img/lyra-logo.png?v=20260918a" alt="Lyra" width="1663" height="864" />
       <span class="badge"><span class="dot"></span>ประมวลผลในเบราว์เซอร์ทั้งหมด ไม่มีการอัปโหลดไฟล์ขึ้นเซิร์ฟเวอร์</span>
     </div>
     <button type="button" class="theme-toggle" id="theme-toggle" aria-label="สลับโหมดสว่าง/มืด" title="สลับโหมดสว่าง/มืด">
@@ -74,7 +74,7 @@
         </button>
         <button data-tab="quickedit">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497Z"/><path d="m15 5 4 4"/></svg>
-          <span class="tab-label">แก้ไขเอกสาร<span class="tab-demo-glow">Demo</span></span>
+          <span class="tab-label">แก้ไขเอกสาร</span>
         </button>
       </div>
     </div>
@@ -129,6 +129,20 @@
         <button data-tab="ocr">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5a2 2 0 0 1 2-2h2"/><path d="M4 17v2a2 2 0 0 0 2 2h2"/><path d="M20 7V5a2 2 0 0 0-2-2h-2"/><path d="M20 17v2a2 2 0 0 1-2 2h-2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/></svg>
           <span class="tab-label">OCR อ่านข้อความ</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="tab-group" data-group="utility">
+      <button type="button" class="group-toggle">
+        <svg class="group-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+        <span class="group-label">เครื่องมือเสริม</span>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="group-menu">
+        <button data-tab="qrcode">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+          <span class="tab-label">สร้าง QR Code</span>
         </button>
       </div>
     </div>
@@ -798,13 +812,13 @@
       <div class="panel-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497Z"/><path d="m15 5 4 4"/></svg>
       </div>
-      <h2>แก้ไขเอกสาร <span class="demo-badge">Demo</span></h2>
+      <h2>แก้ไขเอกสาร</h2>
     </div>
     <p class="desc">คลิกกล่องข้อความบนหน้าเอกสารเพื่อแก้ไขได้ทันที หรือกดปุ่ม "+ เพิ่มข้อความ" เพื่อเพิ่มข้อความใหม่ในตำแหน่งที่ยังไม่มีข้อความ (ลากกล่องข้อความที่เพิ่งเพิ่มไปวางตำแหน่งอื่นได้อิสระ — สังเกตจากกรอบเส้นประ) ทำงานในเบราว์เซอร์ทั้งหมด ไม่ต้องติดตั้งโปรแกรมเสริม</p>
 
     <div class="warn-note">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
-      <div><b>ข้อควรทราบ:</b> วิธีนี้คือการ "ปิดทับ" ข้อความเดิมด้วยกล่องสีทึบแล้วเขียนข้อความใหม่ทับที่ตำแหน่งเดิม <u>ไม่ใช่การลบข้อมูลเดิมออกจากไฟล์จริง</u> ข้อความเดิมอาจยังหลงเหลืออยู่เบื้องหลังไฟล์ ถ้าต้องการลบข้อมูลสำคัญหรือความลับออกจากไฟล์จริง แนะนำให้ใช้โปรแกรมแก้ไข PDF โดยเฉพาะแทน<br><br><b>ฟีเจอร์นี้ยังอยู่ในช่วงทดลอง (Demo):</b> เอกสารบางไฟล์ (เช่น ที่มีเส้นกรอบหรือกราฟิกอยู่ชิดกับข้อความ) อาจแก้ไขได้ไม่สมบูรณ์ 100% กรุณาตรวจสอบผลลัพธ์ทุกครั้งก่อนนำไปใช้งานจริง</div>
+      <div><b>ข้อควรทราบ:</b> วิธีนี้คือการ "ปิดทับ" ข้อความเดิมด้วยกล่องสีทึบแล้วเขียนข้อความใหม่ทับที่ตำแหน่งเดิม <u>ไม่ใช่การลบข้อมูลเดิมออกจากไฟล์จริง</u> ข้อความเดิมอาจยังหลงเหลืออยู่เบื้องหลังไฟล์ ถ้าต้องการลบข้อมูลสำคัญหรือความลับออกจากไฟล์จริง แนะนำให้ใช้โปรแกรมแก้ไข PDF โดยเฉพาะแทน<br><br><b>ฟีเจอร์นี้ยังอยู่ในช่วงทดลอง:</b> เอกสารบางไฟล์ (เช่น ที่มีเส้นกรอบหรือกราฟิกอยู่ชิดกับข้อความ) อาจแก้ไขได้ไม่สมบูรณ์ 100% กรุณาตรวจสอบผลลัพธ์ทุกครั้งก่อนนำไปใช้งานจริง</div>
     </div>
 
     <div class="drop" id="quickedit-drop">
@@ -833,6 +847,26 @@
         <div class="chip-group" id="quickedit-mode-toggle">
           <button type="button" class="chip active" id="quickedit-mode-edit" data-mode="edit">แก้ไขข้อความเดิม</button>
           <button type="button" class="chip" id="quickedit-mode-addtext" data-mode="add" title="เพิ่มข้อความใหม่ลงในตำแหน่งที่ยังไม่มีข้อความ">+ เพิ่มข้อความใหม่</button>
+          <button type="button" class="chip" id="quickedit-mode-symbol" data-mode="symbol" title="แทรกสัญลักษณ์สำเร็จรูป เช่น เครื่องหมายถูก ดาว วงกลม ลงในเอกสาร">+ เพิ่มสัญลักษณ์</button>
+        </div>
+      </div>
+
+      <div class="field qe-symbol-field" id="quickedit-symbol-field" hidden>
+        <label>เลือกสัญลักษณ์ แล้วคลิกตำแหน่งที่ต้องการบนเอกสาร</label>
+        <div class="qe-symbol-palette" id="quickedit-symbol-palette">
+          <button type="button" class="qe-symbol-btn active" data-symbol="check" title="เครื่องหมายถูก">✓</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="cross" title="เครื่องหมายกากบาท">✗</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="squareEmpty" title="กรอบสี่เหลี่ยมว่าง">□</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="squareChecked" title="กล่องกาเครื่องหมาย">☑</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="star" title="ดาว">★</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="circleFilled" title="วงกลมทึบ">●</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="circleEmpty" title="วงกลมโปร่ง">○</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="squareFilled" title="สี่เหลี่ยมทึบ">■</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="triangle" title="สามเหลี่ยม">▲</button>
+          <button type="button" class="qe-symbol-btn" data-symbol="arrow" title="ลูกศร">→</button>
+          <span class="qe-symbol-sep"></span>
+          <input type="number" id="quickedit-symbol-size" class="qe-symbol-size" min="8" max="120" step="1" value="20" title="ขนาด (pt)" />
+          <input type="color" id="quickedit-symbol-color" class="qe-symbol-color" value="#1a1a1a" title="สี" />
         </div>
       </div>
 
@@ -905,10 +939,19 @@
             <div id="quickedit-font-hint" class="qe-font-hint"></div>
 
             <div class="qe-popover-actions">
+              <button id="quickedit-delete" class="btn danger small qe-popover-delete" title="ลบข้อความนี้ออกจากเอกสาร" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                ลบข้อความนี้
+              </button>
               <button id="quickedit-cancel" class="btn secondary small">ยกเลิก</button>
               <button id="quickedit-apply" class="btn small">บันทึก</button>
             </div>
           </div>
+        </div>
+
+        <div class="qe-symbol-popover" id="quickedit-symbol-popover" hidden>
+          <button type="button" class="btn danger small" id="quickedit-symbol-delete">ลบสัญลักษณ์นี้</button>
+          <button type="button" class="btn secondary small" id="quickedit-symbol-cancel">ยกเลิก</button>
         </div>
         </div>
       </div>
@@ -1354,15 +1397,11 @@
             <label id="ocr-filename-label">ชื่อไฟล์ก่อนดาวน์โหลด</label>
             <div class="filename-row">
               <input type="text" id="ocr-filename-input" />
-              <span class="filename-ext" id="ocr-filename-ext">.pdf</span>
+              <span class="filename-ext" id="ocr-filename-ext">.docx</span>
             </div>
           </div>
         </div>
         <div class="btn-group">
-          <button class="btn" id="ocr-download">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            <span id="ocr-download-label">ดาวน์โหลดไฟล์</span>
-          </button>
           <button class="btn" id="ocr-download-text">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
             <span id="ocr-download-text-label">ดาวน์โหลดข้อความ (.docx)</span>
@@ -1370,6 +1409,70 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- ================= QR CODE ================= -->
+  <section class="panel" id="panel-qrcode">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+      </div>
+      <h2>สร้าง QR Code</h2>
+    </div>
+    <p class="desc">สร้าง QR Code จากข้อความหรือลิงก์ แล้วดาวน์โหลดเป็นไฟล์รูปภาพ (PNG) — ประมวลผลในเบราว์เซอร์ทั้งหมด ไม่มีการส่งข้อมูลออกไปที่ใดเลย</p>
+
+    <div class="row">
+      <div class="field field-full">
+        <label>ข้อความ หรือ ลิงก์ (URL)</label>
+        <textarea id="qrcode-text" rows="3" placeholder="พิมพ์ข้อความ หรือวางลิงก์ที่นี่ เช่น https://example.com"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>ขนาดภาพ (พิกเซล)</label>
+        <input type="number" id="qrcode-size" value="512" min="128" max="2000" step="1" />
+      </div>
+      <div class="field">
+        <label>ระดับแก้ไขข้อผิดพลาด</label>
+        <select id="qrcode-ecl">
+          <option value="L">ต่ำ (L) — เก็บข้อมูลได้มากสุด</option>
+          <option value="M" selected>ปานกลาง (M) — แนะนำ</option>
+          <option value="Q">สูง (Q)</option>
+          <option value="H">สูงสุด (H) — ทนทานที่สุด</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn" id="qrcode-run">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        สร้าง QR Code
+      </button>
+      <button class="btn secondary" id="qrcode-clear">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        ล้างค่า
+      </button>
+    </div>
+    <div class="status" id="qrcode-status"></div>
+    <div class="qr-preview-wrap" id="qrcode-preview-wrap" style="display:none;">
+      <canvas id="qrcode-canvas"></canvas>
+    </div>
+    <div class="result" id="qrcode-result">
+      <div class="result-info">
+        <div class="stats"></div>
+        <div class="field field-filename">
+          <label>ชื่อไฟล์ก่อนดาวน์โหลด</label>
+          <div class="filename-row">
+            <input type="text" id="qrcode-filename-input" />
+            <span class="filename-ext">.png</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn" id="qrcode-download">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        ดาวน์โหลดไฟล์
+      </button>
+    </div>
+    <p class="note">ระดับแก้ไขข้อผิดพลาด (Error Correction) ที่สูงขึ้นจะทำให้ QR Code ยังสแกนได้แม้ภาพเสียหายหรือเปื้อนบางส่วน แต่ลวดลายจะละเอียดขึ้นเล็กน้อย — ถ้าไม่แน่ใจแนะนำใช้ค่าเริ่มต้น (ปานกลาง)</p>
   </section>
 </div>
 
@@ -1396,7 +1499,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20260910o"></script>
+<script src="script.js?v=20260925d"></script>
 
 </body>
 </html>
