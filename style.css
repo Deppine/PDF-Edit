@@ -422,7 +422,7 @@
 .warn-note u{text-decoration-color:var(--warn);}
 
 .qe-toolbar{
-  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  display:flex; align-items:center; gap:10px 12px; flex-wrap:wrap;
   margin-bottom:14px; font-size:.82rem; color:var(--text-2);
 }
 .qe-toolbar #quickedit-page-indicator{font-weight:600; color:var(--text);}
@@ -500,6 +500,14 @@
 .qe-textlayer span.qe-box.qe-box-draggable{ cursor:grab; outline-style:dashed; }
 .qe-textlayer span.qe-box.qe-box-draggable:active{ cursor:grabbing; }
 .qe-textlayer span.qe-box.qe-box-dragging{ opacity:.72; background:rgba(91,79,232,.22); z-index:5; }
+/* "+ เพิ่มข้อความใหม่" mode: show the page as a clean blank document. The
+   purple boxes around existing text only matter for edit-existing/symbol
+   mode, so hide them here and let clicks fall through to the page so new text
+   can be placed anywhere. Text the user already inserted (draggable) stays
+   visible so it can still be moved. */
+.qe-stage.qe-addmode .qe-textlayer span.qe-box:not(.qe-box-draggable){
+  background:none; outline:none; pointer-events:none;
+}
 
 /* Live style/alignment preview shown in the side panel while the quickedit
    popover is open — a rough visual stand-in for how the text will look after
@@ -723,3 +731,64 @@
   cursor:pointer; user-select:none;
 }
 .checkline input[type="checkbox"]{width:16px; height:16px; accent-color:var(--accent); cursor:pointer;}
+
+/* Symbol mode: hide the purple boxes too. Only lone glyphs (checkbox/ballot
+   characters) stay clickable, because clicking one snaps the symbol onto it;
+   they get a faint hover hint instead of a permanent box. */
+.qe-stage.qe-symbolmode .qe-textlayer span.qe-box:not(.qe-box-draggable){
+  background:none; outline:none;
+}
+.qe-stage.qe-symbolmode .qe-textlayer span.qe-box:not(.qe-box-glyph):not(.qe-box-draggable){
+  pointer-events:none;
+}
+.qe-stage.qe-symbolmode .qe-textlayer span.qe-box.qe-box-glyph:hover{
+  background:rgba(91,79,232,.18); outline:1.3px solid rgba(91,79,232,.45);
+}
+
+/* ---------- signature image crop dialog ---------- */
+.sig-crop-modal{
+  position:fixed; inset:0; z-index:1000; background:rgba(10,10,25,.55);
+  display:flex; align-items:center; justify-content:center; padding:16px;
+}
+.sig-crop-modal[hidden]{display:none;}
+.sig-crop-dialog{
+  background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-lg); padding:16px; width:min(720px,100%); max-height:100%; overflow:auto;
+  display:flex; flex-direction:column; gap:10px;
+}
+.sig-crop-title{font-weight:700; font-size:1rem;}
+.sig-crop-hint{font-size:.8rem; color:var(--text-2);}
+.sig-crop-stagewrap{display:flex; justify-content:center; background:var(--panel-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px;}
+.sig-crop-stage{
+  position:relative; line-height:0; touch-action:none; user-select:none; -webkit-user-select:none;
+  background-image:linear-gradient(45deg,#cfcfd6 25%,transparent 25%,transparent 75%,#cfcfd6 75%),linear-gradient(45deg,#cfcfd6 25%,#fff 25%,#fff 75%,#cfcfd6 75%);
+  background-size:16px 16px; background-position:0 0,8px 8px;
+}
+.sig-crop-stage canvas{display:block;}
+.sig-crop-box{
+  position:absolute; box-sizing:border-box; border:2px solid var(--accent); cursor:move;
+  box-shadow:0 0 0 9999px rgba(10,10,25,.5);
+}
+.sig-crop-h{
+  position:absolute; width:14px; height:14px; box-sizing:border-box; background:#fff; border:2px solid var(--accent); border-radius:3px;
+  margin:-7px 0 0 -7px;
+}
+.sig-crop-h[data-h="nw"]{left:0; top:0; cursor:nwse-resize;}
+.sig-crop-h[data-h="n"]{left:50%; top:0; cursor:ns-resize;}
+.sig-crop-h[data-h="ne"]{left:100%; top:0; cursor:nesw-resize;}
+.sig-crop-h[data-h="e"]{left:100%; top:50%; cursor:ew-resize;}
+.sig-crop-h[data-h="se"]{left:100%; top:100%; cursor:nwse-resize;}
+.sig-crop-h[data-h="s"]{left:50%; top:100%; cursor:ns-resize;}
+.sig-crop-h[data-h="sw"]{left:0; top:100%; cursor:nesw-resize;}
+.sig-crop-h[data-h="w"]{left:0; top:50%; cursor:ew-resize;}
+.sig-crop-size{font-size:.78rem; color:var(--text-2); text-align:center;}
+.sig-crop-actions{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+.sig-crop-spacer{flex:1;}
+
+/* ---------- Quick Edit: "+ ลงลายเซ็น" mode ---------- */
+.qe-stage.qe-sigmode .qe-textlayer span.qe-box{ background:none; outline:none; pointer-events:none; }
+.qe-sig-field{margin-bottom:14px;}
+/* .field sets display:flex, which beats the [hidden] attribute — same override as .qe-symbol-field[hidden] above */
+.qe-sig-field[hidden]{display:none;}
+.qe-sig-row{display:flex; align-items:center; gap:10px 12px; flex-wrap:wrap;}
+.qe-sig-name{font-size:.8rem; color:var(--text-2); max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}

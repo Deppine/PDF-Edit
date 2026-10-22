@@ -1172,6 +1172,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const alignGroup = document.getElementById("quickedit-align-group");
   const undoBtn = document.getElementById("quickedit-undo");
   const redoBtn = document.getElementById("quickedit-redo");
+  // Same undo/redo, duplicated in the always-visible toolbar: the originals live
+  // inside the floating side panel, which is hidden in symbol mode, so placed
+  // symbols could not be undone from the UI.
+  const undoBarBtn = document.getElementById("quickedit-undo-bar");
+  const redoBarBtn = document.getElementById("quickedit-redo-bar");
   const colorInput = document.getElementById("quickedit-color");
   const applyBtn = document.getElementById("quickedit-apply");
   const cancelBtn = document.getElementById("quickedit-cancel");
@@ -1179,6 +1184,17 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const modeEditBtn = document.getElementById("quickedit-mode-edit");
   const modeAddBtn = document.getElementById("quickedit-mode-addtext");
   const modeSymbolBtn = document.getElementById("quickedit-mode-symbol");
+  const modeSigBtn = document.getElementById("quickedit-mode-signature");
+  const sigFieldEl = document.getElementById("quickedit-sig-field");
+  const sigInputEl = document.getElementById("quickedit-sig-input");
+  const sigChooseBtn = document.getElementById("quickedit-sig-choose");
+  const sigCropBtn = document.getElementById("quickedit-sig-crop");
+  const sigBgChk = document.getElementById("quickedit-sig-bg");
+  const sigNameEl = document.getElementById("quickedit-sig-name");
+  const sigPlaceBtn = document.getElementById("quickedit-sig-place");
+  const sigOverlayEl = document.getElementById("quickedit-sig-overlay");
+  const sigOverlayImg = document.getElementById("quickedit-sig-overlay-img");
+  const sigHandleEl = document.getElementById("quickedit-sig-handle");
   const symbolFieldEl = document.getElementById("quickedit-symbol-field");
   const symbolPaletteEl = document.getElementById("quickedit-symbol-palette");
   const symbolButtons = symbolPaletteEl ? Array.from(symbolPaletteEl.querySelectorAll(".qe-symbol-btn")) : [];
@@ -1194,6 +1210,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
   const EDIT_HINT = "คลิกกล่องข้อความสีม่วงบนเอกสารเพื่อแก้ไข";
   const ADD_HINT = "คลิกตำแหน่งที่ต้องการบนเอกสารเพื่อวางข้อความใหม่ (กดปุ่ม \"+ เพิ่มข้อความ\" อีกครั้งเพื่อออกจากโหมดนี้)";
+  const SIG_HINT = "เลือกรูปลายเซ็น ลากไปตำแหน่งที่ต้องการ ลากจุดมุมขวาล่างเพื่อปรับขนาด แล้วกด \"วางลายเซ็นลงหน้านี้\" (วางได้ทีละหน้า เลิกทำได้)";
   const SYMBOL_HINT = "เลือกสัญลักษณ์ด้านบน แล้วคลิกตำแหน่งที่ต้องการบนเอกสารเพื่อวาง (กดปุ่ม \"+ เพิ่มสัญลักษณ์\" อีกครั้งเพื่อออกจากโหมดนี้)";
 
   const RENDER_WIDTH = 720;
@@ -1795,6 +1812,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   let insertPos = null; // { x, yBaseline } in PDF page coords — set when the popover is open in "add new text" mode instead of "edit existing text" mode
   let addMode = false;
   let symbolMode = false;
+  let sigMode = false;
+  let sigUploadedBytes = null, sigUploadedMime = null, sigRawBytes = null, sigRawMime = null, sigBytes = null, sigMime = null, sigAspect = 1, sigUrl = null;
+  let currentViewport = null, currentPageRotation = 0;
   let selectedSymbolKey = "check";
   let lastSymbolSize = 20;
   let lastSymbolColor = "#1a1a1a";
@@ -1821,6 +1841,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   function refreshHistoryButtons(){
     if(undoBtn) undoBtn.disabled = undoStack.length === 0;
     if(redoBtn) redoBtn.disabled = redoStack.length === 0;
+    if(undoBarBtn) undoBarBtn.disabled = undoStack.length === 0;
+    if(redoBarBtn) redoBarBtn.disabled = redoStack.length === 0;
   }
   function pushUndoSnapshot(){
     if(!workingBytes) return;
@@ -2112,26 +2134,37 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // what it always meant ("go back to plain edit"). Only setSymbolMode(true)
   // (wired to its own chip) turns symbol mode on.
   function updateModeUI(){
-    if(modeEditBtn) modeEditBtn.classList.toggle("active", !addMode && !symbolMode);
+    if(modeEditBtn) modeEditBtn.classList.toggle("active", !addMode && !symbolMode && !sigMode);
+    if(modeSigBtn) modeSigBtn.classList.toggle("active", sigMode);
     if(modeAddBtn) modeAddBtn.classList.toggle("active", addMode);
     if(modeSymbolBtn) modeSymbolBtn.classList.toggle("active", symbolMode);
     if(stageEl){
       stageEl.classList.toggle("qe-addmode", addMode);
       stageEl.classList.toggle("qe-symbolmode", symbolMode);
+      stageEl.classList.toggle("qe-sigmode", sigMode);
     }
+    if(sigFieldEl) sigFieldEl.hidden = !sigMode;
     if(symbolFieldEl) symbolFieldEl.hidden = !symbolMode;
-    if(hintEl) hintEl.textContent = addMode ? ADD_HINT : symbolMode ? SYMBOL_HINT : EDIT_HINT;
+    if(hintEl) hintEl.textContent = addMode ? ADD_HINT : symbolMode ? SYMBOL_HINT : sigMode ? SIG_HINT : EDIT_HINT;
+    syncSigOverlay();
   }
   function setAddMode(on){
     addMode = !!on;
     symbolMode = false;
+    sigMode = false;
     updateModeUI();
     if(!addMode) closePopover();
     closeSymbolPopover();
   }
+  function setSigMode(on){
+    sigMode = !!on;
+    if(sigMode){ addMode = false; symbolMode = false; }
+    updateModeUI();
+    if(sigMode){ closePopover(); closeSymbolPopover(); }
+  }
   function setSymbolMode(on){
     symbolMode = !!on;
-    if(symbolMode) addMode = false;
+    if(symbolMode){ addMode = false; sigMode = false; }
     updateModeUI();
     if(symbolMode) closePopover();
     if(!symbolMode) closeSymbolPopover();
@@ -2528,6 +2561,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const viewport = page.getViewport({ scale: pageScale });
     pageOriginX = (viewport.viewBox && viewport.viewBox[0]) || 0;
     pageOriginY = (viewport.viewBox && viewport.viewBox[1]) || 0;
+    currentViewport = viewport; currentPageRotation = page.rotate || 0;
     const textContent = await page.getTextContent();
 
     textLayerEl.innerHTML = "";
@@ -2542,6 +2576,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       if(!item || !item.str || !item.str.trim()){ return; }
       if(!isTopmostAtOrigin(item, i)){ return; }
       div.classList.add("qe-box");
+      // lone glyph (e.g. a checkbox) = the only boxes symbol mode snaps onto
+      if(item.str.trim().length <= 1) div.classList.add("qe-box-glyph");
       div.addEventListener("click", (e)=>{
         if(suppressNextClick){ suppressNextClick = false; return; }
         e.stopPropagation();
@@ -2589,7 +2625,149 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     pageIndicator.textContent = `หน้า ${currentPage} / ${numPages}`;
     prevBtn.disabled = currentPage <= 1;
     nextBtn.disabled = currentPage >= numPages;
+    syncSigOverlay();
   }
+
+  /* ---------- "+ ลงลายเซ็น" mode ----------
+   * Same signature picture tools as the "ลงลายเซ็น" menu (background removal,
+   * crop dialog, rotation-aware placement), but placed right inside the editor so
+   * nobody has to switch menus. The picture floats on the page as a draggable /
+   * resizable box; "วางลายเซ็นลงหน้านี้" bakes it into the working PDF as one
+   * undoable step (one page at a time). */
+  function clampSigOverlay(){
+    const maxW = canvasEl.width, maxH = canvasEl.height;
+    let w = Math.min(sigOverlayEl.offsetWidth, maxW), h = Math.min(sigOverlayEl.offsetHeight, maxH);
+    let left = parseFloat(sigOverlayEl.style.left) || 0, top = parseFloat(sigOverlayEl.style.top) || 0;
+    left = Math.max(0, Math.min(left, maxW - w)); top = Math.max(0, Math.min(top, maxH - h));
+    sigOverlayEl.style.width = w + "px"; sigOverlayEl.style.height = h + "px";
+    sigOverlayEl.style.left = left + "px"; sigOverlayEl.style.top = top + "px";
+  }
+  function placeSigOverlayDefault(){
+    const w = Math.min(220, canvasEl.width * 0.36);
+    sigOverlayEl.style.width = w + "px";
+    sigOverlayEl.style.height = (w / (sigAspect || 1)) + "px";
+    sigOverlayEl.style.left = ((canvasEl.width - w) / 2) + "px";
+    sigOverlayEl.style.top = Math.max(0, canvasEl.height * 0.72) + "px";
+    clampSigOverlay();
+  }
+  let sigOverlayPlaced = false;
+  function syncSigOverlay(){
+    if(!sigOverlayEl) return;
+    const show = sigMode && !!sigBytes && !!workingBytes && canvasEl.width > 0;
+    sigOverlayEl.classList.toggle("hidden", !show);
+    if(!show) return;
+    if(!sigOverlayPlaced){ placeSigOverlayDefault(); sigOverlayPlaced = true; } else clampSigOverlay();
+  }
+  async function refreshSigImage(){
+    const T = window.LyraSignatureTools;
+    if(!sigRawBytes || !T) return;
+    let res = { bytes: sigRawBytes, mime: sigRawMime };
+    if(sigBgChk && sigBgChk.checked){
+      try{ res = await T.autoRemoveLightBackground(sigRawBytes, sigRawMime); }catch(e){ res = { bytes: sigRawBytes, mime: sigRawMime }; }
+    }
+    sigBytes = res.bytes; sigMime = res.mime;
+    if(sigUrl) URL.revokeObjectURL(sigUrl);
+    sigUrl = URL.createObjectURL(new Blob([sigBytes], { type: sigMime }));
+    sigOverlayImg.src = sigUrl;
+    const dim = await T.loadImageFromBytes(sigRawBytes, sigRawMime);
+    const oldAspect = sigAspect;
+    sigAspect = (dim.naturalWidth / dim.naturalHeight) || 1;
+    if(sigPlaceBtn) sigPlaceBtn.disabled = false;
+    if(sigCropBtn) sigCropBtn.style.display = "inline-flex";
+    if(sigOverlayPlaced && Math.abs(oldAspect - sigAspect) > 0.001 && sigOverlayEl.offsetWidth){
+      sigOverlayEl.style.height = (sigOverlayEl.offsetWidth / sigAspect) + "px";
+    }
+    syncSigOverlay();
+  }
+  if(sigChooseBtn && sigInputEl){
+    sigChooseBtn.onclick = ()=> sigInputEl.click();
+    sigInputEl.addEventListener("change", async ()=>{
+      if(!sigInputEl.files.length) return;
+      const file = sigInputEl.files[0];
+      try{
+        setStatus(status, "กำลังเตรียมรูปลายเซ็น...", "loading");
+        const buf = await readFileAsArrayBuffer(file);
+        sigRawBytes = new Uint8Array(buf);
+        sigRawMime = (file.type === "image/jpeg" || file.type === "image/jpg") ? "image/jpeg" : "image/png";
+        sigUploadedBytes = sigRawBytes; sigUploadedMime = sigRawMime;
+        sigNameEl.textContent = file.name;
+        sigOverlayPlaced = false;
+        await refreshSigImage();
+        setStatus(status, "", "");
+      }catch(e){
+        setStatus(status, "อัปโหลดรูปลายเซ็นไม่สำเร็จ: " + e.message, "err");
+      }
+      sigInputEl.value = "";
+    });
+  }
+  if(sigBgChk) sigBgChk.addEventListener("change", ()=>{ refreshSigImage(); });
+  if(sigCropBtn) sigCropBtn.onclick = async ()=>{
+    const T = window.LyraSignatureTools;
+    if(!T || !sigUploadedBytes) return;
+    const r = await T.cropSignatureImage(sigUploadedBytes, sigUploadedMime);
+    if(!r) return;
+    sigRawBytes = r.bytes; sigRawMime = r.mime;
+    await refreshSigImage();
+  };
+  // drag + resize the floating signature (pointer events: mouse + touch)
+  let sigDrag = null;
+  if(sigOverlayEl){
+    sigOverlayEl.addEventListener("pointerdown", (e)=>{
+      if(e.target === sigHandleEl) return;
+      e.preventDefault();
+      sigOverlayEl.setPointerCapture(e.pointerId);
+      sigDrag = { mode: "move", id: e.pointerId, sx: e.clientX, sy: e.clientY, left: parseFloat(sigOverlayEl.style.left) || 0, top: parseFloat(sigOverlayEl.style.top) || 0 };
+    });
+    sigHandleEl.addEventListener("pointerdown", (e)=>{
+      e.preventDefault(); e.stopPropagation();
+      sigHandleEl.setPointerCapture(e.pointerId);
+      sigDrag = { mode: "resize", id: e.pointerId, sx: e.clientX, sy: e.clientY, w: sigOverlayEl.offsetWidth, h: sigOverlayEl.offsetHeight };
+    });
+    document.addEventListener("pointermove", (e)=>{
+      if(!sigDrag || e.pointerId !== sigDrag.id) return;
+      const dx = e.clientX - sigDrag.sx, dy = e.clientY - sigDrag.sy;
+      if(sigDrag.mode === "move"){
+        const left = Math.max(0, Math.min(sigDrag.left + dx, canvasEl.width - sigOverlayEl.offsetWidth));
+        const top = Math.max(0, Math.min(sigDrag.top + dy, canvasEl.height - sigOverlayEl.offsetHeight));
+        sigOverlayEl.style.left = left + "px"; sigOverlayEl.style.top = top + "px";
+      } else {
+        const curLeft = parseFloat(sigOverlayEl.style.left) || 0, curTop = parseFloat(sigOverlayEl.style.top) || 0;
+        let newW = Math.min(Math.max(30, sigDrag.w + dx), canvasEl.width - curLeft);
+        let newH = newW / (sigAspect || 1);
+        const maxH = canvasEl.height - curTop;
+        if(newH > maxH){ newH = maxH; newW = newH * (sigAspect || 1); }
+        sigOverlayEl.style.width = newW + "px"; sigOverlayEl.style.height = newH + "px";
+      }
+    });
+    const endSigDrag = (e)=>{ if(sigDrag && e.pointerId === sigDrag.id) sigDrag = null; };
+    document.addEventListener("pointerup", endSigDrag);
+    document.addEventListener("pointercancel", endSigDrag);
+  }
+  async function placeSignatureOnPage(){
+    const T = window.LyraSignatureTools;
+    if(!T || !sigBytes || !workingBytes || !currentViewport) return;
+    const left = parseFloat(sigOverlayEl.style.left) || 0, top = parseFloat(sigOverlayEl.style.top) || 0;
+    const w = sigOverlayEl.offsetWidth, h = sigOverlayEl.offsetHeight;
+    // rotation-aware conversion (same helpers as the ลงลายเซ็น menu, verified on 0/90/180/270 pages)
+    const bbox = T.overlayRectToPdfBBox(left, top, w, h, currentViewport);
+    const p = T.rotatedDrawImageParams(bbox.x, bbox.y, bbox.width, bbox.height, currentPageRotation);
+    setStatus(status, "กำลังวางลายเซ็น...", "loading");
+    try{
+      pushUndoSnapshot();
+      workingDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
+      workingDoc.registerFontkit(fontkit);
+      qeFontCache = {};
+      const page = workingDoc.getPage(currentPage - 1);
+      const img = sigMime === "image/jpeg" ? await workingDoc.embedJpg(sigBytes) : await workingDoc.embedPng(sigBytes);
+      page.drawImage(img, { x: p.x, y: p.y, width: p.width, height: p.height, rotate: degrees(p.rotate || 0) });
+      workingBytes = await workingDoc.save();
+      await renderCurrentPage();
+      setStatus(status, `วางลายเซ็นในหน้า ${currentPage} แล้ว (ย้อนกลับได้ด้วย "เลิกทำ")`, "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }
+  }
+  if(sigPlaceBtn){ sigPlaceBtn.disabled = true; sigPlaceBtn.onclick = placeSignatureOnPage; }
 
   wireDrop(drop, input, async (files)=>{
     setAddMode(false);
@@ -2647,6 +2825,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   if(modeSymbolBtn){
     modeSymbolBtn.onclick = ()=>{ setSymbolMode(true); };
   }
+  if(modeSigBtn){
+    modeSigBtn.onclick = ()=>{ setSigMode(true); };
+  }
   symbolButtons.forEach(btn=>{
     btn.addEventListener("click", ()=>{
       selectedSymbolKey = btn.dataset.symbol;
@@ -2665,7 +2846,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     symbolColorInput.addEventListener("input", ()=>{ lastSymbolColor = symbolColorInput.value; });
   }
   document.addEventListener("keydown", (e)=>{
-    if(e.key === "Escape" && (addMode || symbolMode)) setAddMode(false);
+    if(e.key !== "Escape") return;
+    const cropOpen = document.getElementById("signature-crop-modal");
+    if(cropOpen && !cropOpen.hidden) return;   // Esc is closing the crop dialog, not leaving the mode
+    if(addMode || symbolMode || sigMode) setAddMode(false);
   });
   // Clicking anywhere on the stage while add-mode is on, other than on an
   // existing clickable text box (those stop propagation in their own click
@@ -3443,6 +3627,20 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     };
   }
 
+  if(undoBarBtn) undoBarBtn.onclick = ()=>{ if(undoBtn && !undoBarBtn.disabled) undoBtn.onclick(); };
+  if(redoBarBtn) redoBarBtn.onclick = ()=>{ if(redoBtn && !redoBarBtn.disabled) redoBtn.onclick(); };
+  // Ctrl/Cmd+Z = undo, Ctrl+Y or Ctrl/Cmd+Shift+Z = redo — only while this tool's
+  // page is on screen and focus is not inside a text field (which keeps its own undo).
+  document.addEventListener("keydown", (e)=>{
+    if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if(!stageEl || stageEl.offsetParent === null || !workingBytes) return;
+    const t = e.target;
+    if(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const k = (e.key || "").toLowerCase();
+    if(k === "z" && !e.shiftKey){ e.preventDefault(); if(undoBtn && undoStack.length) undoBtn.onclick(); }
+    else if(k === "y" || (k === "z" && e.shiftKey)){ e.preventDefault(); if(redoBtn && redoStack.length) redoBtn.onclick(); }
+  });
+
   downloadBtn.onclick = ()=>{
     if(!workingBytes) return;
     const blob = new Blob([workingBytes], { type: "application/pdf" });
@@ -3469,6 +3667,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const imgInput = document.getElementById("signature-image-input");
   const imgChooseBtn = document.getElementById("signature-image-choose");
   const imgRemoveBtn = document.getElementById("signature-image-remove");
+  const imgCropBtn = document.getElementById("signature-image-crop");
   const imgThumb = document.getElementById("signature-image-thumb");
   const imgTitle = document.getElementById("signature-image-title");
   const imgSub = document.getElementById("signature-image-sub");
@@ -3505,7 +3704,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // raw coordinate space when a placement is added (see addPlacementFromOverlay).
   let currentViewport = null, currentPageRotation = 0;
   let sigImageBytes = null, sigImageMime = null, sigImageAspect = 1, sigImageUrl = null;
-  let rawImageBytes = null, rawImageMime = null; // the file exactly as uploaded, kept around so the bg-removal toggle can be flipped back and forth without re-uploading
+  let uploadedImageBytes = null, uploadedImageMime = null; // pristine upload, so cropping can always start again from the full picture
+  let rawImageBytes = null, rawImageMime = null; // the file exactly as uploaded (or its cropped version), kept around so the bg-removal toggle can be flipped back and forth without re-uploading
   let placements = [];
 
   /* ============================================================
@@ -3622,6 +3822,223 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }
   }
 
+
+  /* ============================================================
+   * Crop dialog for the signature picture.
+   *
+   * A phone photo of a signature usually has a lot of paper (and shadow)
+   * around the ink, which makes the placement box much bigger than the
+   * signature itself. This lets the person drag a rectangle over the part to
+   * KEEP; everything outside is cut away. It always works from the original
+   * upload, so "เลือกทั้งภาพ" brings the full picture back. "ตัดขอบอัตโนมัติ"
+   * finds the ink's own bounding box (ink is darker than the paper, same
+   * assumption as the background remover) and pre-selects it.
+   * ============================================================ */
+  const cropModal = document.getElementById("signature-crop-modal");
+  const cropStage = document.getElementById("signature-crop-stage");
+  const cropCanvas = document.getElementById("signature-crop-canvas");
+  const cropBox = document.getElementById("signature-crop-box");
+  const cropSizeEl = document.getElementById("signature-crop-size");
+  const cropAutoBtn = document.getElementById("signature-crop-auto");
+  const cropResetBtn = document.getElementById("signature-crop-reset");
+  const cropCancelBtn = document.getElementById("signature-crop-cancel");
+  const cropApplyBtn = document.getElementById("signature-crop-apply");
+  const CROP_OUT_MAX_DIM = 1600;
+  const CROP_MIN_PX = 12;      // smallest allowed crop, in dialog (display) pixels
+  let cropImg = null, cropK = 1; // cropK = natural pixels per display pixel
+  let cropRect = null;           // { x, y, w, h } in DISPLAY pixels
+  let cropDrag = null;
+  let cropSourceBytes = null, cropSourceMime = null;
+
+  function cropClampRect(r){
+    const W = cropCanvas.width, H = cropCanvas.height;
+    let { x, y, w, h } = r;
+    w = Math.max(CROP_MIN_PX, Math.min(w, W)); h = Math.max(CROP_MIN_PX, Math.min(h, H));
+    x = Math.max(0, Math.min(x, W - w)); y = Math.max(0, Math.min(y, H - h));
+    return { x, y, w, h };
+  }
+  function cropRender(){
+    if(!cropRect) return;
+    cropBox.style.left = cropRect.x + "px"; cropBox.style.top = cropRect.y + "px";
+    cropBox.style.width = cropRect.w + "px"; cropBox.style.height = cropRect.h + "px";
+    const nw = Math.round(cropRect.w * cropK), nh = Math.round(cropRect.h * cropK);
+    cropSizeEl.textContent = `ขนาดที่เลือก ${nw}×${nh}px (จากภาพเต็ม ${cropImg.naturalWidth}×${cropImg.naturalHeight}px)`;
+  }
+  function cropIsFull(){
+    return cropRect && cropRect.x <= 0.5 && cropRect.y <= 0.5 &&
+      Math.abs(cropRect.w - cropCanvas.width) <= 0.5 && Math.abs(cropRect.h - cropCanvas.height) <= 0.5;
+  }
+
+  // Bounding box of the "ink" in the picture, in NATURAL pixels, or null.
+  function detectInkBounds(img){
+    const maxDim = 800;
+    const sc = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * sc)), h = Math.max(1, Math.round(img.naturalHeight * sc));
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+    const cx = cv.getContext("2d", { willReadFrequently: true }); cx.drawImage(img, 0, 0, w, h);
+    const data = cx.getImageData(0, 0, w, h).data;
+    let transparent = 0;
+    for(let i = 3; i < data.length; i += 4){ if(data[i] < 250) transparent++; }
+    const hasAlpha = transparent / (data.length / 4) > 0.02;
+    const lumAt = (x, y)=>{ const i = (y*w + x)*4; return 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]; };
+    let isInk;
+    if(hasAlpha){
+      isInk = (x, y)=> data[(y*w + x)*4 + 3] > 40;
+    } else {
+      const border = [];
+      for(let x = 0; x < w; x += Math.max(1, Math.round(w/200))){ border.push(lumAt(x, 0)); border.push(lumAt(x, h-1)); }
+      for(let y = 0; y < h; y += Math.max(1, Math.round(h/200))){ border.push(lumAt(0, y)); border.push(lumAt(w-1, y)); }
+      border.sort((a,b)=>a-b);
+      const bg = border[Math.floor(border.length/2)] || 255;
+      const cut = Math.max(0, bg - 55);
+      // Shadows/gradients in a photo are smooth, ink strokes are thin: so a pixel only
+      // counts as ink when it is clearly darker than the average of its own neighbourhood too.
+      const lum = new Float32Array(w*h);
+      for(let y = 0; y < h; y++) for(let x = 0; x < w; x++) lum[y*w + x] = lumAt(x, y);
+      const integ = new Float64Array((w+1)*(h+1));
+      for(let y = 0; y < h; y++){
+        let row = 0;
+        for(let x = 0; x < w; x++){ row += lum[y*w + x]; integ[(y+1)*(w+1) + x+1] = integ[y*(w+1) + x+1] + row; }
+      }
+      const R = Math.max(6, Math.round(Math.max(w, h) * 0.05));
+      const localMean = (x, y)=>{
+        const x0 = Math.max(0, x-R), x1 = Math.min(w, x+R+1), y0 = Math.max(0, y-R), y1 = Math.min(h, y+R+1);
+        const sum = integ[y1*(w+1) + x1] - integ[y0*(w+1) + x1] - integ[y1*(w+1) + x0] + integ[y0*(w+1) + x0];
+        return sum / ((x1-x0) * (y1-y0));
+      };
+      isInk = (x, y)=> lum[y*w + x] < cut && lum[y*w + x] < localMean(x, y) - 28;
+    }
+    // Ignore isolated specks: a row/column only counts if it holds a few ink pixels.
+    const colCount = new Array(w).fill(0), rowCount = new Array(h).fill(0);
+    for(let y = 0; y < h; y++) for(let x = 0; x < w; x++) if(isInk(x, y)){ colCount[x]++; rowCount[y]++; }
+    const minHits = 2;
+    let x0 = 0, x1 = w - 1, y0 = 0, y1 = h - 1;
+    while(x0 < w && colCount[x0] < minHits) x0++;
+    while(x1 > x0 && colCount[x1] < minHits) x1--;
+    while(y0 < h && rowCount[y0] < minHits) y0++;
+    while(y1 > y0 && rowCount[y1] < minHits) y1--;
+    if(x0 >= x1 || y0 >= y1) return null;
+    const padX = Math.round((x1 - x0) * 0.04) + 2, padY = Math.round((y1 - y0) * 0.08) + 2;
+    x0 = Math.max(0, x0 - padX); y0 = Math.max(0, y0 - padY);
+    x1 = Math.min(w - 1, x1 + padX); y1 = Math.min(h - 1, y1 + padY);
+    return { x: x0 / sc, y: y0 / sc, w: (x1 - x0 + 1) / sc, h: (y1 - y0 + 1) / sc };
+  }
+
+  let cropResolve = null;
+  // Opens the crop dialog on `bytes` and resolves with the cropped picture
+  // ({bytes, mime, full}) or null if the person cancelled. Shared with Quick Edit's
+  // "+ ลงลายเซ็น" mode through window.LyraSignatureTools.
+  async function cropSignatureImage(bytes, mime){
+    if(!bytes || !cropModal) return null;
+    try{ cropImg = await loadImageFromBytes(bytes, mime); }
+    catch(e){ setStatus(status, e.message, "err"); return null; }
+    const maxW = Math.min(640, window.innerWidth - 80), maxH = Math.max(160, window.innerHeight - 300);
+    const k = Math.max(cropImg.naturalWidth / maxW, cropImg.naturalHeight / maxH, 1 / 4);
+    cropK = k;
+    cropCanvas.width = Math.max(1, Math.round(cropImg.naturalWidth / k));
+    cropCanvas.height = Math.max(1, Math.round(cropImg.naturalHeight / k));
+    const cx = cropCanvas.getContext("2d");
+    cx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cx.drawImage(cropImg, 0, 0, cropCanvas.width, cropCanvas.height);
+    cropRect = { x: 0, y: 0, w: cropCanvas.width, h: cropCanvas.height };
+    cropSourceBytes = bytes; cropSourceMime = mime;
+    document.body.appendChild(cropModal);   // out of any transformed ancestor, so position:fixed is relative to the window
+    cropModal.hidden = false;
+    cropRender();
+    return new Promise(resolve => { cropResolve = resolve; });
+  }
+  function finishCrop(result){
+    const r = cropResolve; cropResolve = null;
+    if(cropModal) cropModal.hidden = true;
+    cropDrag = null;
+    if(r) r(result);
+  }
+  function closeCropDialog(){ finishCrop(null); }
+
+  if(cropModal){
+    cropBox.addEventListener("pointerdown", (e)=>{
+      e.preventDefault();
+      cropBox.setPointerCapture(e.pointerId);
+      const hEl = e.target.closest && e.target.closest(".sig-crop-h");
+      cropDrag = { id: e.pointerId, mode: hEl ? hEl.dataset.h : "move", sx: e.clientX, sy: e.clientY, r: { ...cropRect } };
+    });
+    cropBox.addEventListener("pointermove", (e)=>{
+      if(!cropDrag || e.pointerId !== cropDrag.id) return;
+      const dx = e.clientX - cropDrag.sx, dy = e.clientY - cropDrag.sy;
+      const o = cropDrag.r, W = cropCanvas.width, H = cropCanvas.height, m = cropDrag.mode;
+      if(m === "move"){
+        cropRect = cropClampRect({ x: o.x + dx, y: o.y + dy, w: o.w, h: o.h });
+      } else {
+        let l = o.x, t = o.y, r = o.x + o.w, b = o.y + o.h;
+        if(m.includes("w")) l = Math.max(0, Math.min(l + dx, r - CROP_MIN_PX));
+        if(m.includes("e")) r = Math.min(W, Math.max(r + dx, l + CROP_MIN_PX));
+        if(m.includes("n")) t = Math.max(0, Math.min(t + dy, b - CROP_MIN_PX));
+        if(m.includes("s")) b = Math.min(H, Math.max(b + dy, t + CROP_MIN_PX));
+        cropRect = { x: l, y: t, w: r - l, h: b - t };
+      }
+      cropRender();
+    });
+    const endDrag = (e)=>{ if(cropDrag && e.pointerId === cropDrag.id) cropDrag = null; };
+    cropBox.addEventListener("pointerup", endDrag);
+    cropBox.addEventListener("pointercancel", endDrag);
+    cropResetBtn.onclick = ()=>{ cropRect = { x: 0, y: 0, w: cropCanvas.width, h: cropCanvas.height }; cropRender(); };
+    cropAutoBtn.onclick = ()=>{
+      const b = detectInkBounds(cropImg);
+      if(!b){ cropSizeEl.textContent = "หาขอบของลายเซ็นไม่เจอ ลองลากกรอบเอง"; return; }
+      cropRect = cropClampRect({ x: b.x / cropK, y: b.y / cropK, w: b.w / cropK, h: b.h / cropK });
+      cropRender();
+    };
+    cropCancelBtn.onclick = closeCropDialog;
+    cropModal.addEventListener("pointerdown", (e)=>{ if(e.target === cropModal) closeCropDialog(); });
+    document.addEventListener("keydown", (e)=>{ if(e.key === "Escape" && !cropModal.hidden) closeCropDialog(); });
+    cropApplyBtn.onclick = async ()=>{
+      if(!cropRect || !cropImg) return;
+      try{
+        if(cropIsFull()){
+          finishCrop({ bytes: cropSourceBytes, mime: cropSourceMime, full: true });   // nothing cut: the untouched original
+          return;
+        }
+        const sx = Math.max(0, Math.round(cropRect.x * cropK)), sy = Math.max(0, Math.round(cropRect.y * cropK));
+        const sw = Math.max(1, Math.min(cropImg.naturalWidth - sx, Math.round(cropRect.w * cropK)));
+        const sh = Math.max(1, Math.min(cropImg.naturalHeight - sy, Math.round(cropRect.h * cropK)));
+        const out = Math.min(1, CROP_OUT_MAX_DIM / Math.max(sw, sh));
+        const ow = Math.max(1, Math.round(sw * out)), oh = Math.max(1, Math.round(sh * out));
+        const cv = document.createElement("canvas"); cv.width = ow; cv.height = oh;
+        cv.getContext("2d").drawImage(cropImg, sx, sy, sw, sh, 0, 0, ow, oh);
+        const blob = await new Promise(res => cv.toBlob(res, "image/png"));
+        finishCrop({ bytes: new Uint8Array(await blob.arrayBuffer()), mime: "image/png", full: false });
+      }catch(e){
+        finishCrop(null);
+        setStatus(status, "ตัดขอบรูปไม่สำเร็จ: " + e.message, "err");
+      }
+    };
+  }
+  async function openCropDialog(){
+    if(!uploadedImageBytes) return;
+    const r = await cropSignatureImage(uploadedImageBytes, uploadedImageMime);
+    if(!r) return;
+    try{
+      rawImageBytes = r.bytes; rawImageMime = r.mime;
+      const dim = await loadImageFromBytes(rawImageBytes, rawImageMime);
+      sigImageAspect = (dim.naturalWidth / dim.naturalHeight) || 1;
+      imgSub.textContent = `${dim.naturalWidth}×${dim.naturalHeight}px · ${fmtBytes(rawImageBytes.length)}${r.full ? "" : " · ตัดขอบแล้ว"}`;
+      await refreshSignatureImage();
+      // keep the box where it is and at the same width; only its height follows the new shape
+      if(!overlayEl.classList.contains("hidden")){
+        const w = overlayEl.offsetWidth || 1;
+        overlayEl.style.height = (w / sigImageAspect) + "px";
+        clampOverlay();
+      }
+    }catch(e){
+      setStatus(status, "ตัดขอบรูปไม่สำเร็จ: " + e.message, "err");
+    }
+  }
+  if(imgCropBtn) imgCropBtn.onclick = openCropDialog;
+
+  // Shared with Quick Edit's "+ ลงลายเซ็น" mode (it runs only after the page has
+  // loaded, so this assignment is always in place by the time it is used).
+  window.LyraSignatureTools = { loadImageFromBytes, autoRemoveLightBackground, cropSignatureImage, overlayRectToPdfBBox, rotatedDrawImageParams };
+
   function renderPlacementsList(){
     placementsEl.innerHTML = "";
     if(!placements.length){
@@ -3737,6 +4154,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       const buf = await readFileAsArrayBuffer(file);
       rawImageBytes = new Uint8Array(buf);
       rawImageMime = (file.type === "image/jpeg" || file.type === "image/jpg") ? "image/jpeg" : "image/png";
+      uploadedImageBytes = rawImageBytes; uploadedImageMime = rawImageMime;
       const dim = await new Promise((resolve, reject)=>{
         const im = new Image();
         const tmpUrl = URL.createObjectURL(new Blob([buf], { type: rawImageMime }));
@@ -3756,6 +4174,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // so this drops back to a secondary (lower-emphasis) button.
       imgChooseBtn.classList.add("secondary");
       imgRemoveBtn.style.display = "inline-flex";
+      if(imgCropBtn) imgCropBtn.style.display = "inline-flex";
       if(bgRow) bgRow.style.display = "flex";
       if(bgToggle) bgToggle.checked = true;
       setStatus(status, "กำลังตัดพื้นหลังอัตโนมัติ...", "loading");
@@ -3779,6 +4198,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   imgRemoveBtn.onclick = ()=>{
     sigImageBytes = null; sigImageMime = null;
     rawImageBytes = null; rawImageMime = null;
+    uploadedImageBytes = null; uploadedImageMime = null;
+    if(imgCropBtn) imgCropBtn.style.display = "none";
     if(sigImageUrl){ URL.revokeObjectURL(sigImageUrl); sigImageUrl = null; }
     overlayImg.removeAttribute("src");
     imgThumb.innerHTML = THUMB_PLACEHOLDER;

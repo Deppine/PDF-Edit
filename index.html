@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20260925a" />
+<link rel="stylesheet" href="style.css?v=20261022f" />
 </head>
 <body>
 <div class="wrap">
@@ -575,9 +575,35 @@
         </div>
         <div class="sig-image-actions">
           <button class="btn small" id="signature-image-choose">เลือกรูป</button>
+          <button class="btn secondary small" id="signature-image-crop" style="display:none;" title="ตัดขอบพื้นหลังส่วนที่เกินออก">✂ ตัดขอบรูป</button>
           <button class="btn secondary small" id="signature-image-remove" style="display:none;">ลบรูป</button>
         </div>
         <input type="file" id="signature-image-input" accept="image/png,image/jpeg" style="display:none;" />
+      </div>
+
+      <div class="sig-crop-modal" id="signature-crop-modal" hidden>
+        <div class="sig-crop-dialog" role="dialog" aria-modal="true" aria-label="ตัดขอบรูปลายเซ็น">
+          <div class="sig-crop-title">ตัดขอบรูปลายเซ็น</div>
+          <div class="sig-crop-hint">ลากกรอบหรือลากจุดที่ขอบเพื่อเลือกส่วนที่ต้องการเก็บ ส่วนนอกกรอบจะถูกตัดทิ้ง</div>
+          <div class="sig-crop-stagewrap">
+            <div class="sig-crop-stage" id="signature-crop-stage">
+              <canvas id="signature-crop-canvas"></canvas>
+              <div class="sig-crop-box" id="signature-crop-box">
+                <span class="sig-crop-h" data-h="nw"></span><span class="sig-crop-h" data-h="n"></span><span class="sig-crop-h" data-h="ne"></span>
+                <span class="sig-crop-h" data-h="e"></span><span class="sig-crop-h" data-h="se"></span><span class="sig-crop-h" data-h="s"></span>
+                <span class="sig-crop-h" data-h="sw"></span><span class="sig-crop-h" data-h="w"></span>
+              </div>
+            </div>
+          </div>
+          <div class="sig-crop-size" id="signature-crop-size"></div>
+          <div class="sig-crop-actions">
+            <button class="btn secondary small" id="signature-crop-auto" title="หาขอบของลายเซ็นแล้วตัดส่วนว่างรอบๆ ให้">ตัดขอบอัตโนมัติ</button>
+            <button class="btn secondary small" id="signature-crop-reset">เลือกทั้งภาพ</button>
+            <span class="sig-crop-spacer"></span>
+            <button class="btn secondary small" id="signature-crop-cancel">ยกเลิก</button>
+            <button class="btn small" id="signature-crop-apply">ใช้ภาพที่ตัด</button>
+          </div>
+        </div>
       </div>
 
       <div class="sig-bgremove-row" id="signature-bgremove-row" style="display:none;">
@@ -848,6 +874,7 @@
           <button type="button" class="chip active" id="quickedit-mode-edit" data-mode="edit">แก้ไขข้อความเดิม</button>
           <button type="button" class="chip" id="quickedit-mode-addtext" data-mode="add" title="เพิ่มข้อความใหม่ลงในตำแหน่งที่ยังไม่มีข้อความ">+ เพิ่มข้อความใหม่</button>
           <button type="button" class="chip" id="quickedit-mode-symbol" data-mode="symbol" title="แทรกสัญลักษณ์สำเร็จรูป เช่น เครื่องหมายถูก ดาว วงกลม ลงในเอกสาร">+ เพิ่มสัญลักษณ์</button>
+          <button type="button" class="chip" id="quickedit-mode-signature" data-mode="signature" title="วางรูปลายเซ็นลงในหน้านี้ (ทีละหน้า)">+ ลงลายเซ็น</button>
         </div>
       </div>
 
@@ -870,10 +897,27 @@
         </div>
       </div>
 
+      <div class="field qe-sig-field" id="quickedit-sig-field" hidden>
+        <label>ลงลายเซ็นในหน้านี้ (วางได้ทีละหน้า)</label>
+        <div class="qe-sig-row">
+          <button type="button" class="btn small" id="quickedit-sig-choose">เลือกรูปลายเซ็น</button>
+          <span class="qe-sig-name" id="quickedit-sig-name">ยังไม่ได้เลือกรูปลายเซ็น</span>
+          <button type="button" class="btn secondary small" id="quickedit-sig-crop" style="display:none;" title="ตัดขอบพื้นหลังส่วนที่เกินออก">✂ ตัดขอบรูป</button>
+          <label class="qe-bold-label" for="quickedit-sig-bg">
+            <input type="checkbox" id="quickedit-sig-bg" checked>
+            ตัดพื้นหลังสีอ่อนอัตโนมัติ
+          </label>
+          <button type="button" class="btn small" id="quickedit-sig-place" disabled>วางลายเซ็นลงหน้านี้</button>
+        </div>
+        <input type="file" id="quickedit-sig-input" accept="image/png,image/jpeg" style="display:none;" />
+      </div>
+
       <div class="qe-toolbar">
         <button class="btn secondary small" id="quickedit-prev">‹ ก่อนหน้า</button>
         <span id="quickedit-page-indicator">หน้า 1 / 1</span>
         <button class="btn secondary small" id="quickedit-next">ถัดไป ›</button>
+        <button class="btn secondary small" id="quickedit-undo-bar" title="เลิกทำ (Ctrl+Z)" disabled>↶ เลิกทำ</button>
+        <button class="btn secondary small" id="quickedit-redo-bar" title="ทำซ้ำ (Ctrl+Y)" disabled>↷ ทำซ้ำ</button>
         <span class="qe-hint" id="quickedit-hint">คลิกกล่องข้อความสีม่วงบนเอกสารเพื่อแก้ไข</span>
       </div>
 
@@ -881,6 +925,7 @@
         <div class="qe-stage" id="quickedit-stage">
           <canvas id="quickedit-canvas"></canvas>
           <div class="qe-textlayer" id="quickedit-textlayer"></div>
+          <div class="sig-overlay hidden" id="quickedit-sig-overlay"><img id="quickedit-sig-overlay-img" alt="ลายเซ็น"><div class="sig-handle" id="quickedit-sig-handle"></div></div>
           <div class="qe-preview-mask" id="quickedit-preview-mask" hidden></div>
           <div class="qe-preview-box" id="quickedit-preview" hidden></div>
 
@@ -1499,7 +1544,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20260925d"></script>
+<script src="script.js?v=20261022c"></script>
 
 </body>
 </html>
