@@ -1902,9 +1902,28 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     _qeFontBytesCache[key] = arr;
     return arr;
   }
+  // Built-in PDF "standard" fonts (Helvetica ≈ Arial, Times, Courier). They are
+  // NOT embedded — every PDF viewer already has them — so they cost no file
+  // size, need no font program, and are metric-identical to Arial / Times New
+  // Roman / Courier New, which is what most English-language and Office-made
+  // documents use. They only cover Latin (WinAnsi) text, so Thai still goes
+  // through Sarabun (see resolveEditFont's fallback).
+  const STD_FONTS = {
+    "std:sans":  { label: "Arial / Helvetica (ฟอนต์มาตรฐาน)", regular: "Helvetica",  bold: "HelveticaBold" },
+    "std:serif": { label: "Times New Roman / Times (ฟอนต์มาตรฐาน)", regular: "TimesRoman", bold: "TimesRomanBold" },
+    "std:mono":  { label: "Courier New / Courier (ฟอนต์มาตรฐาน)", regular: "Courier", bold: "CourierBold" },
+  };
+  function isStdFontKey(key){ return typeof key === "string" && key.indexOf("std:") === 0; }
   async function getEmbeddedFont(key){
     if(qeFontCache[key]) return qeFontCache[key];
-    const font = await workingDoc.embedFont(qeFontBytes(key), { subset: true });
+    let font;
+    if(isStdFontKey(key)){
+      const isBold = /:b$/.test(key);
+      const spec = STD_FONTS[key.replace(/:b$/, "")];
+      font = await workingDoc.embedFont(StandardFonts[isBold ? spec.bold : spec.regular]);
+    }else{
+      font = await workingDoc.embedFont(qeFontBytes(key), { subset: true });
+    }
     qeFontCache[key] = font;
     return font;
   }
@@ -1913,6 +1932,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // regular weight if no bold variant exists for that family.
   function resolveFontKey(baseKey, wantBold){
     if(!wantBold) return baseKey;
+    if(isStdFontKey(baseKey)) return baseKey + ":b";
     const list = window.__QE_FONTS || [];
     const boldEntry = list.find(f => f.bold && f.base === baseKey);
     return boldEntry ? boldEntry.key : baseKey;
@@ -1930,6 +1950,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       opt.value = "sarabun"; opt.textContent = "Sarabun (ค่าเริ่มต้น)";
       fontSelect.appendChild(opt);
     }
+    Object.keys(STD_FONTS).forEach(k=>{
+      const opt = document.createElement("option");
+      opt.value = k; opt.textContent = STD_FONTS[k].label;
+      fontSelect.appendChild(opt);
+    });
   }
   populateFontSelect();
 
@@ -1972,6 +1997,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     fontSelect.value = value;
   }
 
+  const THAI_CHAR_RE = /[\u0E00-\u0E7F]/;
+  const THAI_FONT_NAME_RE = /sarabun|angsana|cordia|browallia|dilleniaupc|eucrosia|freesia|iris|jasmine|kodchiang|lilyup|thsarabun|th\s?sarabun|thaisans|loma|garuda|waree|norasi|purisa|kinnari|umpush|tlwg/i;
+  function guessFontFor(baseFontName, text){
+    const name = baseFontName || "";
+    const bold = /bold|black|heavy|semibold|demi/i.test(name);
+    const italic = /italic|oblique/i.test(name);
+    let key = "std:sans";
+    if(THAI_CHAR_RE.test(text || "") || THAI_FONT_NAME_RE.test(name)) key = "sarabun";
+    else if(/courier|consolas|monaco|menlo|lucida\s?console|mono/i.test(name)) key = "std:mono";
+    else if(/times|georgia|cambria|garamond|palatino|minion|book\s?antiqua|century|baskerville|didot|serif(?!.*sans)/i.test(name) && !/sans/i.test(name)) key = "std:serif";
+    return { key, bold, italic };
+  }
+
   // Fires after a popover is already open for `item`; runs in the
   // background and, if successful, adds/selects the "ฟอนต์ต้นฉบับ" option a
   // moment later — never blocks opening the editor. Falls back to Sarabun
@@ -1985,8 +2023,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     try{
       const tempDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
       const tempPage = tempDoc.getPage(currentPage - 1);
-      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item);
-      if(!extracted) return;
+      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item) || { bytes: null, baseFontName: null };
 
       if(extracted.bytes){
         try{
@@ -2006,17 +2043,27 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         }
       }
 
-      // No usable embedded font program recovered — Sarabun is the only
-      // other font this app offers, so fall back to it directly (rather
-      // than trying to match the source font's name to one of several
-      // bundled fonts, since there is no longer a choice to make).
+      // No usable embedded font program recovered — pick the closest
+      // built-in font from the font's declared name and the text itself:
+      // Latin text in an Arial-like / Times-like / Courier-like font maps to
+      // the matching standard font (so edited English lines keep the look of
+      // the lines around them); Thai text, or a Thai font name, maps to
+      // Sarabun. The user can still override in the dropdown.
       if(activeItem === item){
-        lastFontKey = "sarabun";
-        fontSelect.value = "sarabun";
+        const guess = guessFontFor(extracted.baseFontName, item.str);
+        lastFontKey = guess.key;
+        fontSelect.value = guess.key;
+        if(extracted.baseFontName){
+          if(boldCheckbox) boldCheckbox.checked = guess.bold;
+          if(italicCheckbox) italicCheckbox.checked = guess.italic;
+          lastBold = guess.bold;
+        }
+        updatePreview();
         if(fontHintEl){
-          fontHintEl.textContent = extracted.baseFontName
-            ? "ไม่พบไฟล์ฟอนต์ต้นฉบับ (" + extracted.baseFontName + ") ใช้ฟอนต์ Sarabun แทนอัตโนมัติ (อาจไม่ตรงกับต้นฉบับ 100%)"
-            : "ไม่พบไฟล์ฟอนต์ต้นฉบับ ใช้ฟอนต์ Sarabun แทนอัตโนมัติ (อาจไม่ตรงกับต้นฉบับ 100%)";
+          const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
+          fontHintEl.textContent = (extracted.baseFontName
+            ? "ฟอนต์ในเอกสารคือ " + extracted.baseFontName + " — เลือก "
+            : "เลือก ") + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
         }
       }
     }catch(e){
@@ -2047,8 +2094,16 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       ? (lastFontKey || "sarabun") : selectedValue;
     lastFontKey = baseKey;
     lastBold = wantBold;
-    const fontKey = resolveFontKey(baseKey, wantBold);
-    const font = await getEmbeddedFont(fontKey);
+    let fontKey = resolveFontKey(baseKey, wantBold);
+    let font = await getEmbeddedFont(fontKey);
+    // Standard fonts only cover Latin text — never let Thai (or other
+    // unsupported characters) turn into blanks; use Sarabun for those lines.
+    if(isStdFontKey(fontKey) && !fontFullySupportsText(font, newText)){
+      warning = "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
+      lastFontKey = "sarabun";
+      fontKey = resolveFontKey("sarabun", wantBold);
+      font = await getEmbeddedFont(fontKey);
+    }
     return { font, warning };
   }
 
@@ -2250,6 +2305,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
     previewEl.textContent = textarea.value;
     previewEl.style.color = colorInput.value || "#000000";
+    previewEl.style.fontFamily = ({ "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" })[fontSelect.value] || "";
     previewEl.style.fontWeight = (boldCheckbox && boldCheckbox.checked) ? "700" : "400";
     previewEl.style.fontStyle = (italicCheckbox && italicCheckbox.checked) ? "italic" : "normal";
     previewEl.style.textDecoration = (underlineCheckbox && underlineCheckbox.checked) ? "underline" : "none";
@@ -2296,6 +2352,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
   [textarea, fontsizeInput].forEach(el=> el && el.addEventListener("input", updatePreview));
   [boldCheckbox, italicCheckbox, underlineCheckbox].forEach(el=> el && el.addEventListener("change", updatePreview));
+  fontSelect.addEventListener("change", updatePreview);
   if(colorInput) colorInput.addEventListener("input", updatePreview);
 
   // Floating popover: positioned in the same canvas-pixel space as
@@ -3338,8 +3395,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           color: rgb(fill.r, fill.g, fill.b),
         });
       }
-      const fontKey = resolveFontKey(meta.fontKey, meta.bold);
-      const font = await getEmbeddedFont(fontKey);
+      let fontKey = resolveFontKey(meta.fontKey, meta.bold);
+      let font = await getEmbeddedFont(fontKey);
+      if(isStdFontKey(fontKey) && !fontFullySupportsText(font, meta.text)){
+        fontKey = resolveFontKey("sarabun", meta.bold);
+        font = await getEmbeddedFont(fontKey);
+      }
       const { r: tr, g: tg, b: tb } = hexToRgb01(meta.color);
       // A drag translates the already-rendered glyph directly by the mouse
       // delta (newX/newY is that glyph's new left edge/baseline) — it does
