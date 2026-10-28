@@ -322,9 +322,66 @@ function rangesToString(pages){
       const parentGroup = btn.closest(".tab-group");
       if(parentGroup) parentGroup.classList.add("active-group");
       closeAllGroups(null);
+      updateCrumb(btn);
+      if(sidebar && sidebar.classList.contains("nav-open")) setNavOpen(false);
+      const main = document.getElementById("main");
+      if(main && window.matchMedia("(max-width:900px)").matches) main.scrollIntoView({ block: "start" });
       document.dispatchEvent(new CustomEvent("pdftools:tabchange", { detail: { tab: btn.dataset.tab } }));
     });
   });
+
+  // Sidebar layout: "group › tool" breadcrumb above each tool's title
+  function updateCrumb(btn){
+    const crumb = document.getElementById("main-crumb");
+    if(!crumb || !btn) return;
+    const group = btn.closest(".tab-group");
+    const gl = group && group.querySelector(".group-label");
+    const tl = btn.querySelector(".tab-label");
+    crumb.textContent = (gl ? gl.textContent.trim() + "  ›  " : "") + (tl ? tl.textContent.trim() : "");
+  }
+  updateCrumb(nav.querySelector(".group-menu button[data-tab].active"));
+
+  // Phone/narrow screens: the tool list folds behind the ☰ button
+  const sidebar = document.getElementById("sidebar");
+  const navToggle = document.getElementById("nav-toggle");
+  function setNavOpen(open){
+    if(!sidebar) return;
+    sidebar.classList.toggle("nav-open", open);
+    if(navToggle) navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if(navToggle) navToggle.addEventListener("click", ()=> setNavOpen(!sidebar.classList.contains("nav-open")));
+
+  // Tool search: filter the sidebar list as you type; Enter opens the first match
+  const search = document.getElementById("tool-search");
+  if(search){
+    const norm = (s)=> String(s || "").toLowerCase().replace(/\s+/g, "");
+    let emptyMsg = null;
+    const visibleButtons = ()=> Array.from(nav.querySelectorAll(".group-menu button[data-tab]")).filter(b => !b.hidden);
+    search.addEventListener("input", ()=>{
+      const q = norm(search.value);
+      let any = false;
+      groups.forEach(g=>{
+        const gname = norm((g.querySelector(".group-label") || {}).textContent);
+        let groupHit = false;
+        g.querySelectorAll(".group-menu button[data-tab]").forEach(b=>{
+          const hit = !q || norm(b.textContent).indexOf(q) !== -1 || gname.indexOf(q) !== -1;
+          b.hidden = !hit;
+          if(hit) groupHit = true;
+        });
+        g.hidden = !groupHit;
+        if(groupHit) any = true;
+      });
+      if(!any){
+        if(!emptyMsg){ emptyMsg = document.createElement("div"); emptyMsg.className = "tool-search-empty"; nav.appendChild(emptyMsg); }
+        emptyMsg.textContent = "ไม่พบเครื่องมือที่ตรงกับ “" + search.value.trim() + "”";
+        emptyMsg.hidden = false;
+      }else if(emptyMsg){ emptyMsg.hidden = true; }
+    });
+    search.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter"){ const first = visibleButtons()[0]; if(first){ e.preventDefault(); first.click(); } }
+      if(e.key === "Escape"){ search.value = ""; search.dispatchEvent(new Event("input")); }
+    });
+  }
 })();
 
 /* ---------- generic drop-zone wiring ---------- */
