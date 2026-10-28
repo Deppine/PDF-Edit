@@ -653,6 +653,8 @@
 .qe-bold-label u{text-decoration:underline;}
 .qe-font-hint{font-size:.72rem; color:var(--text-2); flex-basis:100%; min-height:1em;}
 .qe-font-hint:empty{display:none;}
+.qe-localfont-btn{align-self:flex-start;}
+.qe-localfont-btn[hidden]{display:none;}
 
 @media (max-width:640px){
   .qe-sidepanel-head{

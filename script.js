@@ -230,8 +230,8 @@ async function autoDecryptIfNeeded(doc, rawBytes){
   }
   throw new Error('ไฟล์นี้มีการเข้ารหัส/ตั้งรหัสผ่านไว้ และระบบไม่สามารถปลดล็อกให้อัตโนมัติได้ กรุณาไปที่เมนู "ปลดล็อกรหัสผ่าน" เพื่อปลดล็อกไฟล์ก่อน แล้วนำไฟล์ที่ปลดล็อกแล้วมาใช้งานเมนูนี้อีกครั้ง');
 }
-async function renderPageCanvas(arrayBuffer, pageNum, targetWidth){
-  const doc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+async function renderPageCanvas(arrayBuffer, pageNum, targetWidth, docOpts){
+  const doc = await pdfjsLib.getDocument(Object.assign({ data: arrayBuffer.slice(0) }, docOpts || {})).promise;
   const page = await doc.getPage(pageNum);
   const baseViewport = page.getViewport({ scale: 1 });
   const scale = targetWidth / baseViewport.width;
@@ -1888,6 +1888,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // matching the "click = where you're stamping" mental model rather than
   // inserted text's baseline-left convention.
   const insertedSymbols = new Map();
+  let currentPjsDoc = null, retiredPjsDoc = null, currentPjsPage = null;
   function originKey(x, y){ return Math.round(x*2) + "," + Math.round(y*2); }
   let suppressNextClick = false; // set right before a drag-release so the click event the browser still fires afterward doesn't also pop the edit popover open
 
@@ -1914,6 +1915,41 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     "std:mono":  { label: "Courier New / Courier (ฟอนต์มาตรฐาน)", regular: "Courier", bold: "CourierBold" },
   };
   function isStdFontKey(key){ return typeof key === "string" && key.indexOf("std:") === 0; }
+  // Fonts found at runtime rather than bundled with the app:
+  //   "local:<postscriptName>" — a font installed on THIS computer, read via
+  //       the browser's Local Font Access API (see findLocalFontFor below).
+  //       A complete font, so it can draw any character it supports.
+  //   "orig:<pdf font name>" — the font program embedded in the opened PDF
+  //       itself, as decoded by pdf.js (see recoverPdfjsFont below). Usually
+  //       a subset: only the characters the document already uses.
+  // Each entry: { kind, label, cssFamily, bytes, load(), charSet, cmapExtra,
+  //   bold, fallbackKey, boldKey, regularKey, noSubset }.
+  const extraFonts = new Map();
+  function isExtraFontKey(key){ return extraFonts.has(key); }
+  async function ensureExtraFontBytes(entry){
+    if(!entry.bytes) entry.bytes = await entry.load();
+    return entry.bytes;
+  }
+  // pdf.js rebuilds every embedded font's cmap around the PDF's own
+  // character codes (mostly private-use code points) and only adds a real
+  // Unicode entry for some glyphs — the space glyph, for one, is usually
+  // left out. recoverPdfjsFont() works out the missing Unicode -> glyph
+  // pairs from the PDF's /ToUnicode data; this teaches the embedded fontkit
+  // font about them so layout, widths and the generated /ToUnicode (copy &
+  // search in the saved file) all use the right glyphs.
+  function patchFontCmap(pdfFont, extra){
+    try{
+      const fk = pdfFont.embedder && pdfFont.embedder.font;
+      if(!fk || !extra || !extra.size) return;
+      const proc = fk._cmapProcessor;
+      const origLookup = proc.lookup.bind(proc);
+      proc.lookup = (cp, vs)=> origLookup(cp, vs) || extra.get(cp) || 0;
+      // read the base set from the cmap processor, NOT fk.characterSet:
+      // fontkit caches that getter as a locked own property on first read
+      const merged = Array.from(new Set([...(proc.getCharacterSet() || []), ...extra.keys()]));
+      Object.defineProperty(fk, "characterSet", { value: merged, configurable: true });
+    }catch(e){ /* best-effort: worst case the coverage check falls back to a built-in font */ }
+  }
   async function getEmbeddedFont(key){
     if(qeFontCache[key]) return qeFontCache[key];
     let font;
@@ -1921,6 +1957,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       const isBold = /:b$/.test(key);
       const spec = STD_FONTS[key.replace(/:b$/, "")];
       font = await workingDoc.embedFont(StandardFonts[isBold ? spec.bold : spec.regular]);
+    }else if(isExtraFontKey(key)){
+      const entry = extraFonts.get(key);
+      const bytes = await ensureExtraFontBytes(entry);
+      font = await workingDoc.embedFont(bytes, { subset: !entry.noSubset });
+      if(entry.cmapExtra) patchFontCmap(font, entry.cmapExtra);
     }else{
       font = await workingDoc.embedFont(qeFontBytes(key), { subset: true });
     }
@@ -1931,6 +1972,17 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // "-bold" sibling entry that shares the same base family; fall back to the
   // regular weight if no bold variant exists for that family.
   function resolveFontKey(baseKey, wantBold){
+    if(isExtraFontKey(baseKey)){
+      const e = extraFonts.get(baseKey);
+      if(wantBold){
+        if(e.bold) return baseKey;
+        if(e.boldKey && extraFonts.has(e.boldKey)) return e.boldKey;
+        // no bold version of this exact font: a built-in bold beats silently ignoring the checkbox
+        return resolveFontKey(e.fallbackKey || "sarabun", true);
+      }
+      if(e.bold && e.regularKey && extraFonts.has(e.regularKey)) return e.regularKey;
+      return baseKey;
+    }
     if(!wantBold) return baseKey;
     if(isStdFontKey(baseKey)) return baseKey + ":b";
     const list = window.__QE_FONTS || [];
@@ -1957,24 +2009,56 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     });
   }
   populateFontSelect();
+  // Detected fonts (this computer's / the document's own) are listed in their
+  // own group at the top of the dropdown, so they stay available for new
+  // "+ เพิ่มข้อความ" text too, not just the line they were found for. Only
+  // the user-facing entries are listed (bold/regular siblings are picked
+  // automatically from the bold checkbox).
+  function syncExtraFontOptions(){
+    const keep = fontSelect.value;
+    let group = fontSelect.querySelector("optgroup[data-extra]");
+    if(group) group.remove();
+    const listed = Array.from(extraFonts.entries()).filter(([, e])=> e.listed);
+    if(listed.length){
+      group = document.createElement("optgroup");
+      group.label = "ฟอนต์ที่ตรวจพบ";
+      group.setAttribute("data-extra", "1");
+      listed.forEach(([key, e])=>{
+        const opt = document.createElement("option");
+        opt.value = key; opt.textContent = e.label;
+        group.appendChild(opt);
+      });
+      fontSelect.insertBefore(group, fontSelect.firstChild);
+    }
+    fontSelect.value = keep;
+    if(fontSelect.value !== keep && fontSelect.options.length) fontSelect.value = "sarabun";
+  }
+  // A new PDF gets its own embedded fonts — forget the previous file's.
+  function clearDocumentFonts(){
+    Array.from(extraFonts.keys()).forEach(k=>{ if(k.indexOf("orig:") === 0) extraFonts.delete(k); });
+    if(lastFontKey && lastFontKey.indexOf("orig:") === 0) lastFontKey = "sarabun";
+    syncExtraFontOptions();
+  }
 
   /* ============================================================
    * MATCHING THE SOURCE DOCUMENT'S OWN FONT
    *
-   * Two ways to get replacement text to visually match the original
-   * document instead of the app's fixed Thai font list:
-   *  1. Best-effort auto-detect: try to pull the ORIGINAL PDF's own
-   *     embedded font program for the clicked text and reuse it. This only
-   *     works when the source PDF embeds a COMPLETE font (not the
-   *     used-characters-only subset that Word/LibreOffice/browsers embed by
-   *     default) — see ContentEditor.extractOriginalFontBytes for why.
-   *  2. Name matching: when that fails, match the source PDF's declared
-   *     font name against the app's own bundled fonts and pre-select the
-   *     closest one. Silently unavailable when neither works; the built-in
-   *     font list (whatever was last selected) is always the fallback.
+   * When existing text is clicked, the editor tries — in this order — to
+   * get a font that looks exactly like the original line:
+   *  1. The same font installed on THIS computer (Chrome/Edge "Local Font
+   *     Access"). A complete font, so it can draw any new text. Needs the
+   *     person's one-time permission; until it's granted a button offers it.
+   *  2. The font embedded in the PDF itself, as already decoded by pdf.js
+   *     for the on-screen preview. Usually only a SUBSET (the characters the
+   *     document already uses), so it's only used when every character of
+   *     the new text exists in it — otherwise the closest built-in font is
+   *     used automatically (resolveEditFont / fontForText).
+   *  3. Otherwise the closest built-in font, guessed from the font's name
+   *     (guessFontFor).
+   * The dropdown always lets the person override the choice.
    * ============================================================ */
   const fontHintEl = document.getElementById("quickedit-font-hint");
-  let originalFontBytes = null;      // reset per popover open; best-effort per-item
+  const localFontBtn = document.getElementById("quickedit-localfont-btn");
 
   function fontFullySupportsText(font, text){
     try{
@@ -1985,19 +2069,27 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       return true;
     }catch(e){ return false; }
   }
-  function removeSpecialFontOption(value){
-    const opt = fontSelect.querySelector('option[value="'+value+'"]');
-    if(opt) opt.remove();
+  // pdf.js reports SARA AM (ำ) decomposed as NIKHAHIT + SARA AA (ํา) and
+  // sometimes leaks control bytes from broken /ToUnicode tables; neither is
+  // something a person typed, so clean them before editing/drawing.
+  function cleanExtractedText(str){
+    return String(str || "").replace(/\u0E4D\u0E32/g, "\u0E33").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
   }
-  function addSpecialFontOption(value, label){
-    removeSpecialFontOption(value);
-    const opt = document.createElement("option");
-    opt.value = value; opt.textContent = label;
-    fontSelect.insertBefore(opt, fontSelect.firstChild);
-    fontSelect.value = value;
+  function charSetCovers(set, text){
+    if(!set) return false;
+    for(const ch of cleanExtractedText(text)){
+      if(!set.has(ch.codePointAt(0))) return false;
+    }
+    return true;
+  }
+  function fontLabelFor(key){
+    if(isExtraFontKey(key)) return extraFonts.get(key).label;
+    if(STD_FONTS[key]) return STD_FONTS[key].label;
+    const e = (window.__QE_FONTS || []).find(f => f.key === key);
+    return e ? e.label : "Sarabun";
   }
 
-  const THAI_CHAR_RE = /[\u0E00-\u0E7F]/;
+  const THAI_CHAR_RE = /[฀-๿]/;
   const THAI_FONT_NAME_RE = /sarabun|angsana|cordia|browallia|dilleniaupc|eucrosia|freesia|iris|jasmine|kodchiang|lilyup|thsarabun|th\s?sarabun|thaisans|loma|garuda|waree|norasi|purisa|kinnari|umpush|tlwg/i;
   function guessFontFor(baseFontName, text){
     const name = baseFontName || "";
@@ -2010,100 +2102,397 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return { key, bold, italic };
   }
 
-  // Fires after a popover is already open for `item`; runs in the
-  // background and, if successful, adds/selects the "ฟอนต์ต้นฉบับ" option a
-  // moment later — never blocks opening the editor. Falls back to Sarabun
-  // (the app's only remaining built-in font) when the real font can't be
-  // recovered — see the header comment on vendor/quickedit-fonts-data.js for
-  // why the other bundled Thai fonts were removed.
-  async function tryDetectOriginalFont(item){
-    originalFontBytes = null;
-    removeSpecialFontOption("__original__");
-    if(!workingBytes) return;
+  /* ---------- 2. the PDF's own embedded font, via pdf.js ---------- */
+  let _cssFontSeq = 0;
+  function registerCssFont(bytes){
+    // lets the live preview box show the real font too; purely cosmetic
+    try{
+      const family = "qe-detected-" + (++_cssFontSeq);
+      const face = new FontFace(family, bytes.slice(0));
+      document.fonts.add(face);
+      face.load().catch(()=>{});
+      return family;
+    }catch(e){ return ""; }
+  }
+  // Build Unicode -> glyph id pairs for every character code of a pdf.js font
+  // (pdf.js keeps the PDF's own code -> its rebuilt "font char" table
+  // (toFontChar) and code -> Unicode (/ToUnicode) when fontExtraProperties
+  // is on, and its rebuilt cmap maps font char -> glyph).
+  function pdfjsUnicodeToGlyph(pjsFont, fk){
+    const extra = new Map();
+    try{
+      const toFontChar = pjsFont.toFontChar || [];
+      const tu = pjsFont.toUnicode || {};
+      const unicodeOf = (code)=>{
+        if(Array.isArray(tu._map)) return tu._map[code];
+        if(typeof tu.firstChar === "number") return (code >= tu.firstChar && code <= tu.lastChar) ? String.fromCharCode(code) : undefined;
+        return undefined;
+      };
+      const proc = fk._cmapProcessor;
+      for(const codeStr in toFontChar){
+        const code = +codeStr;
+        const fontChar = toFontChar[code];
+        if(typeof fontChar !== "number") continue;
+        let u = unicodeOf(code);
+        if(typeof u === "number") u = String.fromCodePoint(u);
+        if(typeof u !== "string" || !u) continue;
+        const chars = Array.from(u);
+        if(chars.length !== 1) continue; // ligatures (e.g. "fi") can't be typed as one character
+        const cp = chars[0].codePointAt(0);
+        if(cp < 0x20 || (cp >= 0xE000 && cp <= 0xF8FF)) continue;
+        const gid = proc.lookup(fontChar);
+        if(!gid) continue;
+        if(!extra.has(cp) && !proc.lookup(cp)) extra.set(cp, gid);
+      }
+      // pdf.js leaves blank glyphs (the space!) out of its tables entirely,
+      // but the glyph itself is still in the font: find the outline-less
+      // glyph whose advance matches the PDF's declared width for the
+      // character code that /ToUnicode says is a space (often not 32: subset
+      // fonts renumber their codes).
+      if(!proc.lookup(32) && !extra.has(32) && fk.numGlyphs < 5000){
+        let w = 0;
+        const widths = pjsFont.widths || {};
+        if(Array.isArray(tu._map)){
+          for(let code=0; code<tu._map.length; code++){
+            if(tu._map[code] === " " && widths[code] > 0){ w = widths[code]; break; }
+          }
+        }
+        if(!w && widths[32] > 0) w = widths[32];
+        if(w > 0){
+          const want = w * fk.unitsPerEm / 1000;
+          for(let gid=1; gid<fk.numGlyphs; gid++){
+            const g = fk.getGlyph(gid);
+            if(Math.abs(g.advanceWidth - want) <= Math.max(2, want*0.02) && g.path.commands.length === 0){ extra.set(32, gid); break; }
+          }
+        }
+      }
+    }catch(e){}
+    return extra;
+  }
+  function recoverPdfjsFont(item, info, fallbackKey){
+    if(!currentPjsPage || !item.fontName) return null;
+    let pjsFont = null;
+    try{ pjsFont = currentPjsPage.commonObjs.get(item.fontName); }catch(e){ return null; }
+    if(!pjsFont || !pjsFont.data || pjsFont.isType3Font || pjsFont.missingFile) return null;
+    const name = info.name || String(pjsFont.name || "").replace(/^[A-Z]{6}\+/, "") || "ฟอนต์ในไฟล์";
+    const key = "orig:" + (pjsFont.name || item.fontName);
+    if(extraFonts.has(key)) return key;
+    try{
+      const bytes = new Uint8Array(pjsFont.data);
+      const fk = fontkit.create(bytes);
+      if(!fk || typeof fk.layout !== "function") return null;
+      // Only TrueType outlines: pdf.js's rebuilt CFF fonts (from Type1/CFF
+      // embeds, e.g. LaTeX or InDesign PDFs) come out of pdf-lib as a font
+      // that other PDF readers reject — verified with poppler/Chrome OTS.
+      if(!fk.directory || !fk.directory.tables || !fk.directory.tables.glyf) return null;
+      const extra = pdfjsUnicodeToGlyph(pjsFont, fk);
+      const charSet = new Set([...(fk.characterSet || []), ...extra.keys()]);
+      extraFonts.set(key, {
+        kind: "orig", listed: true,
+        label: name + " (ฟอนต์ต้นฉบับในไฟล์)",
+        displayName: name,
+        bytes, load: async()=> bytes, charSet, cmapExtra: extra,
+        bold: !!(info.bold), fallbackKey,
+        cssFamily: registerCssFont(bytes),
+        noSubset: false,
+      });
+      return key;
+    }catch(e){ return null; }
+  }
+
+  /* ---------- 1. the same font installed on this computer ---------- */
+  const localFontsSupported = typeof window.queryLocalFonts === "function";
+  let _localFontList = null;
+  async function localFontPermission(){
+    if(!localFontsSupported) return "unsupported";
+    if(_localFontList) return "granted";
+    try{
+      const st = await navigator.permissions.query({ name: "local-fonts" });
+      return st.state;
+    }catch(e){ return "prompt"; }
+  }
+  // Must run inside a click handler the first time (the browser shows its
+  // permission prompt then); afterwards it works silently.
+  async function loadLocalFontList(){
+    if(_localFontList) return _localFontList;
+    _localFontList = await window.queryLocalFonts();
+    return _localFontList;
+  }
+  function normFontName(s){
+    return String(s || "").toLowerCase()
+      .replace(/^[a-z]{6}\+/, "")
+      .replace(/[^a-z0-9฀-๿]/g, "")
+      .replace(/(ps)?mt$/, "");
+  }
+  function styleFlags(s){
+    s = String(s || "");
+    return { bold: /bold|black|heavy|semibold|demi/i.test(s), italic: /italic|oblique/i.test(s) };
+  }
+  function matchLocalFont(list, pdfName, wantBold, wantItalic){
+    const n = normFontName(pdfName);
+    if(!n) return null;
+    let hit = list.find(f => normFontName(f.postscriptName) === n)
+           || list.find(f => normFontName(f.fullName) === n);
+    if(hit) return hit;
+    // family + style: "AngsanaNew-Bold", "Cordia New,Bold", "TimesNewRomanPS-BoldItalicMT"
+    const fam = normFontName(String(pdfName).replace(/^[A-Z]{6}\+/, "").split(/[-,]/)[0]).replace(/ps$/, "");
+    const same = list.filter(f => normFontName(f.family) === fam);
+    if(!same.length) return null;
+    const score = (f)=>{
+      const st = styleFlags(f.style);
+      return (st.bold === wantBold ? 2 : 0) + (st.italic === wantItalic ? 1 : 0) + (/^(regular|normal|roman|book)$/i.test(f.style) ? 0.5 : 0);
+    };
+    return same.slice().sort((a, b)=> score(b) - score(a))[0];
+  }
+  // --- TrueType Collection (.ttc, e.g. Cambria) -> standalone font, since
+  // pdf-lib can only embed a single-font file ---
+  function buildSfnt(version, tables){
+    tables = tables.slice().sort((a, b)=> a.tag - b.tag);
+    const n = tables.length;
+    let es = 1, ls = 0; while(es * 2 <= n){ es *= 2; ls++; }
+    let total = 12 + 16*n;
+    tables.forEach(t=>{ total += (t.data.length + 3) & ~3; });
+    const out = new Uint8Array(total), dv = new DataView(out.buffer);
+    dv.setUint32(0, version); dv.setUint16(4, n); dv.setUint16(6, es*16); dv.setUint16(8, ls); dv.setUint16(10, n*16 - es*16);
+    let off = 12 + 16*n;
+    tables.forEach((t, i)=>{
+      const r = 12 + 16*i;
+      dv.setUint32(r, t.tag); dv.setUint32(r+4, t.checksum); dv.setUint32(r+8, off); dv.setUint32(r+12, t.data.length);
+      out.set(t.data, off);
+      off += (t.data.length + 3) & ~3;
+    });
+    return out;
+  }
+  function extractFromCollection(bytes, postscriptName){
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = dv.getUint32(8);
+    for(let i=0;i<count;i++){
+      try{
+        const off = dv.getUint32(12 + 4*i);
+        const numTables = dv.getUint16(off + 4);
+        const tables = [];
+        for(let t=0;t<numTables;t++){
+          const r = off + 12 + 16*t;
+          const o = dv.getUint32(r+8), len = dv.getUint32(r+12);
+          tables.push({ tag: dv.getUint32(r), checksum: dv.getUint32(r+4), data: bytes.subarray(o, o + len) });
+        }
+        const single = buildSfnt(dv.getUint32(off), tables);
+        if(fontkit.create(single).postscriptName === postscriptName) return single;
+      }catch(e){}
+    }
+    return null;
+  }
+  async function readLocalFontBytes(fd){
+    const blob = await fd.blob();
+    let bytes = new Uint8Array(await blob.arrayBuffer());
+    if(bytes[0] === 0x74 && bytes[1] === 0x74 && bytes[2] === 0x63 && bytes[3] === 0x66){ // "ttcf"
+      bytes = extractFromCollection(bytes, fd.postscriptName);
+      if(!bytes) throw new Error("อ่านฟอนต์ " + fd.fullName + " จากเครื่องไม่สำเร็จ");
+    }
+    return bytes;
+  }
+  function registerLocalEntry(fd, fallbackKey, listed){
+    const key = "local:" + fd.postscriptName;
+    if(extraFonts.has(key)){
+      const e = extraFonts.get(key);
+      if(listed && !e.listed){ e.listed = true; }
+      return key;
+    }
+    extraFonts.set(key, {
+      kind: "local", listed: !!listed,
+      label: fd.fullName + " (ฟอนต์ในเครื่อง)",
+      displayName: fd.fullName,
+      bytes: null, load: ()=> readLocalFontBytes(fd), charSet: null, cmapExtra: null,
+      bold: styleFlags(fd.style).bold, fallbackKey,
+      cssFamily: "'" + String(fd.family).replace(/'/g, "") + "'",
+      family: fd.family, noSubset: false,
+    });
+    return key;
+  }
+  // Returns { key } for a usable installed font, or { error } / null.
+  async function findLocalFontFor(info, text, fallbackKey){
+    const list = await loadLocalFontList();
+    const fd = matchLocalFont(list, info.name, !!info.bold, !!info.italic);
+    if(!fd) return null;
+    const key = registerLocalEntry(fd, fallbackKey, true);
+    const entry = extraFonts.get(key);
+    try{
+      const bytes = await ensureExtraFontBytes(entry);
+      const fk = fontkit.create(bytes);
+      const os2 = fk["OS/2"];
+      if(os2 && os2.fsType && os2.fsType.noEmbedding){
+        extraFonts.delete(key);
+        return { error: "ฟอนต์ " + fd.fullName + " ในเครื่องไม่อนุญาตให้ฝังลงไฟล์ PDF (ข้อกำหนดลิขสิทธิ์ของฟอนต์)" };
+      }
+      // pdf-lib/fontkit write CID-keyed CFF fonts (large CJK .otf/.ttc
+      // fonts) into a file other PDF readers can't open — skip those.
+      const cff = fk["CFF "];
+      if(cff && cff.isCIDFont){ extraFonts.delete(key); return null; }
+      entry.noSubset = !!(os2 && os2.fsType && os2.fsType.noSubsetting);
+      entry.charSet = new Set(fk.characterSet || []);
+      if(!charSetCovers(entry.charSet, text)){
+        extraFonts.delete(key);
+        return null; // matched by name but can't even draw the original line: not the right font
+      }
+    }catch(e){
+      extraFonts.delete(key);
+      return { error: e.message };
+    }
+    // bold/regular siblings of the same family, so the bold checkbox keeps the same look
+    const fam = list.filter(f => f.family === fd.family && !styleFlags(f.style).italic);
+    const boldSib = fam.find(f => styleFlags(f.style).bold);
+    const regSib = fam.find(f => !styleFlags(f.style).bold);
+    if(boldSib && boldSib.postscriptName !== fd.postscriptName) entry.boldKey = registerLocalEntry(boldSib, fallbackKey, false);
+    if(regSib && regSib.postscriptName !== fd.postscriptName) entry.regularKey = registerLocalEntry(regSib, fallbackKey, false);
+    return { key };
+  }
+
+  /* ---------- detection, run each time existing text is clicked ---------- */
+  async function getSourceFontInfo(item){
+    let name = null, bold = false, italic = false;
     try{
       const tempDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
       const tempPage = tempDoc.getPage(currentPage - 1);
-      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item) || { bytes: null, baseFontName: null };
-
-      if(extracted.bytes){
-        try{
-          tempDoc.registerFontkit(fontkit);
-          const font = await tempDoc.embedFont(extracted.bytes, { subset: true });
-          if(typeof font.getCharacterSet !== "function") throw new Error("unusable");
-          // Only offer it if the item is STILL the one being edited (user
-          // may have already closed/switched popovers by the time this
-          // resolves).
-          if(activeItem !== item) return;
-          originalFontBytes = extracted.bytes;
-          addSpecialFontOption("__original__", "ฟอนต์ต้นฉบับ (ตรวจพบอัตโนมัติ)");
-          if(fontHintEl) fontHintEl.textContent = "พบฟอนต์จากไฟล์ต้นฉบับ ใช้แทนได้เลย";
-          return;
-        }catch(e){
-          // fall through to the Sarabun fallback below
-        }
+      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item);
+      if(extracted && extracted.baseFontName) name = extracted.baseFontName;
+    }catch(e){}
+    try{
+      const f = currentPjsPage && item.fontName ? currentPjsPage.commonObjs.get(item.fontName) : null;
+      if(f){
+        if(!name && f.name) name = String(f.name).replace(/^[A-Z]{6}\+/, "");
+        bold = !!(f.bold || f.black);
+        italic = !!f.italic;
       }
-
-      // No usable embedded font program recovered — pick the closest
-      // built-in font from the font's declared name and the text itself:
-      // Latin text in an Arial-like / Times-like / Courier-like font maps to
-      // the matching standard font (so edited English lines keep the look of
-      // the lines around them); Thai text, or a Thai font name, maps to
-      // Sarabun. The user can still override in the dropdown.
-      if(activeItem === item){
-        const guess = guessFontFor(extracted.baseFontName, item.str);
-        lastFontKey = guess.key;
-        fontSelect.value = guess.key;
-        if(extracted.baseFontName){
-          if(boldCheckbox) boldCheckbox.checked = guess.bold;
-          if(italicCheckbox) italicCheckbox.checked = guess.italic;
-          lastBold = guess.bold;
-        }
-        updatePreview();
-        if(fontHintEl){
-          const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
-          fontHintEl.textContent = (extracted.baseFontName
-            ? "ฟอนต์ในเอกสารคือ " + extracted.baseFontName + " — เลือก "
-            : "เลือก ") + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
-        }
-      }
-    }catch(e){
-      originalFontBytes = null;
+    }catch(e){}
+    const fromName = styleFlags(name);
+    return { name, bold: bold || fromName.bold, italic: italic || fromName.italic };
+  }
+  function selectDetectedFont(key, info){
+    syncExtraFontOptions();
+    lastFontKey = key;
+    fontSelect.value = key;
+    if(info.name){
+      if(boldCheckbox) boldCheckbox.checked = info.bold;
+      if(italicCheckbox) italicCheckbox.checked = info.italic;
+      lastBold = info.bold;
     }
+    updatePreview();
+  }
+  let detectSeq = 0;
+  let pendingLocalInfo = null;
+  async function tryDetectOriginalFont(item){
+    const seq = ++detectSeq;
+    if(localFontBtn) localFontBtn.hidden = true;
+    pendingLocalInfo = null;
+    if(!workingBytes) return;
+    const stale = ()=> seq !== detectSeq || activeItem !== item;
+    try{
+      const info = await getSourceFontInfo(item);
+      if(stale()) return;
+      const guess = guessFontFor(info.name, item.str);
+      const fallbackKey = guess.key;
+      let notes = [];
+
+      // 1. same font on this computer
+      if(info.name && localFontsSupported){
+        const perm = await localFontPermission();
+        if(stale()) return;
+        if(perm === "granted"){
+          const res = await findLocalFontFor(info, item.str, fallbackKey).catch(()=> null);
+          if(stale()) return;
+          if(res && res.key){
+            selectDetectedFont(res.key, info);
+            if(fontHintEl) fontHintEl.textContent = "ใช้ฟอนต์ " + extraFonts.get(res.key).displayName + " จากเครื่องนี้ — ตรงกับฟอนต์ในเอกสาร (" + info.name + ")";
+            return;
+          }
+          notes.push(res && res.error ? res.error : "ไม่พบฟอนต์ " + info.name + " ในเครื่องนี้");
+        }else if(perm === "prompt" && localFontBtn){
+          pendingLocalInfo = info;
+          localFontBtn.textContent = "ค้นหาฟอนต์ " + info.name + " ในเครื่องนี้";
+          localFontBtn.hidden = false;
+        }
+      }
+
+      // 2. the PDF's own embedded font (only if it can at least redraw the original line)
+      const origKey = recoverPdfjsFont(item, info, fallbackKey);
+      if(origKey && charSetCovers(extraFonts.get(origKey).charSet, item.str)){
+        selectDetectedFont(origKey, info);
+        if(fontHintEl){
+          fontHintEl.textContent = (notes.length ? notes.join(" · ") + " — " : "")
+            + "ใช้ฟอนต์ต้นฉบับจากไฟล์ (" + extraFonts.get(origKey).displayName + ") ซึ่งมีเฉพาะตัวอักษรที่ใช้อยู่ในเอกสาร ถ้าพิมพ์ตัวที่ไม่มี ระบบจะใช้ "
+            + fontLabelFor(fallbackKey) + " แทนอัตโนมัติ";
+        }
+        return;
+      }
+
+      // 3. closest built-in font
+      lastFontKey = guess.key;
+      fontSelect.value = guess.key;
+      if(info.name){
+        if(boldCheckbox) boldCheckbox.checked = info.bold;
+        if(italicCheckbox) italicCheckbox.checked = info.italic;
+        lastBold = info.bold;
+      }
+      updatePreview();
+      if(fontHintEl){
+        const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
+        fontHintEl.textContent = (notes.length ? notes.join(" · ") + " — " : "")
+          + (info.name ? "ฟอนต์ในเอกสารคือ " + info.name + " — เลือก " : "เลือก ")
+          + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
+      }
+    }catch(e){ /* detection is best-effort; the dropdown still works */ }
+  }
+  if(localFontBtn){
+    localFontBtn.addEventListener("click", async ()=>{
+      const item = activeItem;
+      localFontBtn.disabled = true;
+      try{
+        await loadLocalFontList(); // shows the browser's permission prompt
+      }catch(e){
+        if(fontHintEl) fontHintEl.textContent = "ไม่ได้รับอนุญาตให้อ่านฟอนต์ในเครื่อง — ใช้ฟอนต์ที่เลือกไว้ต่อไป (เปิดสิทธิ์ได้ที่ไอคอนแม่กุญแจข้างช่อง URL)";
+        localFontBtn.hidden = true;
+        localFontBtn.disabled = false;
+        return;
+      }
+      localFontBtn.disabled = false;
+      if(item && activeItem === item) tryDetectOriginalFont(item);
+    });
+  }
+
+  // Draw-ready font for `text`: the requested font if it has every character,
+  // otherwise the closest built-in one (standard fonts are Latin-only and a
+  // document's own embedded font is usually a subset) — an edit must never
+  // end up with missing/blank glyphs.
+  async function fontForText(baseKey, wantBold, text){
+    let key = resolveFontKey(baseKey || "sarabun", wantBold);
+    let font = null, warning = null;
+    try{ font = await getEmbeddedFont(key); }catch(e){ font = null; }
+    if(font && (isStdFontKey(key) || isExtraFontKey(key)) && !fontFullySupportsText(font, text)) font = null;
+    if(!font){
+      const entry = extraFonts.get(baseKey) || extraFonts.get(key);
+      let fb = entry ? (entry.fallbackKey || "sarabun") : "sarabun";
+      key = resolveFontKey(fb, wantBold);
+      font = await getEmbeddedFont(key);
+      if(isStdFontKey(key) && !fontFullySupportsText(font, text)){
+        fb = "sarabun";
+        key = resolveFontKey(fb, wantBold);
+        font = await getEmbeddedFont(key);
+      }
+      warning = entry
+        ? "ฟอนต์ " + entry.displayName + " ไม่มีตัวอักษรบางตัวในข้อความนี้ ใช้ " + fontLabelFor(fb) + " แทน"
+        : "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
+    }
+    return { font, warning, key };
   }
 
   // Resolve which pdf-lib font object to draw the replacement text with,
-  // honoring the popover's font dropdown: the auto-detected original font,
-  // or one of the app's built-in Thai fonts. Always falls back to a built-in
-  // font if the preferred choice can't render every character in the new
-  // text (or fails to embed at all) — an edit should never end up with
-  // missing/tofu glyphs.
+  // honoring the popover's font dropdown (see fontForText for the fallback).
   async function resolveEditFont(newText){
-    const selectedValue = fontSelect.value;
+    const baseKey = fontSelect.value || lastFontKey || "sarabun";
     const wantBold = !!(boldCheckbox && boldCheckbox.checked);
-    let warning = null;
-
-    if(selectedValue === "__original__" && originalFontBytes){
-      try{
-        const font = await workingDoc.embedFont(originalFontBytes, { subset: true });
-        if(fontFullySupportsText(font, newText)) return { font, warning: null };
-        warning = "ฟอนต์ต้นฉบับไม่มีตัวอักษรบางตัวในข้อความนี้ ใช้ฟอนต์สำรองแทน";
-      }catch(e){ /* fall through to built-in list */ }
-    }
-
-    const baseKey = (selectedValue === "__original__" || !selectedValue)
-      ? (lastFontKey || "sarabun") : selectedValue;
     lastFontKey = baseKey;
     lastBold = wantBold;
-    let fontKey = resolveFontKey(baseKey, wantBold);
-    let font = await getEmbeddedFont(fontKey);
-    // Standard fonts only cover Latin text — never let Thai (or other
-    // unsupported characters) turn into blanks; use Sarabun for those lines.
-    if(isStdFontKey(fontKey) && !fontFullySupportsText(font, newText)){
-      warning = "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
-      lastFontKey = "sarabun";
-      fontKey = resolveFontKey("sarabun", wantBold);
-      font = await getEmbeddedFont(fontKey);
-    }
+    const { font, warning } = await fontForText(baseKey, wantBold, newText);
     return { font, warning };
   }
 
@@ -2305,7 +2694,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
     previewEl.textContent = textarea.value;
     previewEl.style.color = colorInput.value || "#000000";
-    previewEl.style.fontFamily = ({ "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" })[fontSelect.value] || "";
+    previewEl.style.fontFamily = ({ "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" })[fontSelect.value]
+      || (extraFonts.has(fontSelect.value) ? extraFonts.get(fontSelect.value).cssFamily : "") || "";
     previewEl.style.fontWeight = (boldCheckbox && boldCheckbox.checked) ? "700" : "400";
     previewEl.style.fontStyle = (italicCheckbox && italicCheckbox.checked) ? "italic" : "normal";
     previewEl.style.textDecoration = (underlineCheckbox && underlineCheckbox.checked) ? "underline" : "none";
@@ -2458,10 +2848,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(colorLabel) colorLabel.textContent = "สี";
     textarea.value = "";
     fontsizeInput.value = lastInsertSize;
-    removeSpecialFontOption("__original__");
     if(fontHintEl) fontHintEl.textContent = "";
+    if(localFontBtn) localFontBtn.hidden = true;
     fontSelect.value = lastFontKey;
-    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.selectedIndex = 0;
+    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.value = "sarabun";
     if(boldCheckbox) boldCheckbox.checked = lastBold;
     if(italicCheckbox) italicCheckbox.checked = lastItalic;
     if(underlineCheckbox) underlineCheckbox.checked = lastUnderline;
@@ -2482,13 +2872,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(popoverHead) popoverHead.textContent = "แก้ไขข้อความ";
     if(deleteBtn) deleteBtn.style.display = "";
     if(colorLabel) colorLabel.textContent = "สี (ดูดจากต้นฉบับ)";
-    textarea.value = item.str;
+    textarea.value = cleanExtractedText(item.str);
     const approxSize = Math.hypot(item.transform[2], item.transform[3]) || 12;
     fontsizeInput.value = Math.round(approxSize*10)/10;
-    removeSpecialFontOption("__original__");
     if(fontHintEl) fontHintEl.textContent = "";
+    if(localFontBtn) localFontBtn.hidden = true;
     fontSelect.value = lastFontKey;
-    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.selectedIndex = 0;
+    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.value = "sarabun";
     if(boldCheckbox) boldCheckbox.checked = lastBold;
     if(italicCheckbox) italicCheckbox.checked = lastItalic;
     if(underlineCheckbox) underlineCheckbox.checked = lastUnderline;
@@ -2607,7 +2997,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
 
   async function renderCurrentPage(){
-    const { canvas, numPages: n, doc: pdfjsDoc, scale } = await renderPageCanvas(workingBytes, currentPage, RENDER_WIDTH);
+    // fontExtraProperties keeps pdf.js's decoded copy of each embedded font
+    // (plus its code/Unicode tables) — used by recoverPdfjsFont().
+    const { canvas, numPages: n, doc: pdfjsDoc, scale } = await renderPageCanvas(workingBytes, currentPage, RENDER_WIDTH, { fontExtraProperties: true });
     numPages = n; pageScale = scale;
     canvasEl.width = canvas.width; canvasEl.height = canvas.height;
     canvasEl.getContext("2d").drawImage(canvas, 0, 0);
@@ -2615,6 +3007,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     stageEl.style.height = canvas.height + "px";
 
     const page = await pdfjsDoc.getPage(currentPage);
+    // Every render opens a fresh pdf.js document; free the one before the
+    // previous (not the previous itself, in case a click is still reading
+    // fonts from it) so memory doesn't grow with every edit/page turn.
+    if(retiredPjsDoc && retiredPjsDoc !== pdfjsDoc){ try{ retiredPjsDoc.destroy(); }catch(e){} }
+    retiredPjsDoc = (currentPjsDoc && currentPjsDoc !== pdfjsDoc) ? currentPjsDoc : null;
+    currentPjsDoc = pdfjsDoc; currentPjsPage = page;
     const viewport = page.getViewport({ scale: pageScale });
     pageOriginX = (viewport.viewBox && viewport.viewBox[0]) || 0;
     pageOriginY = (viewport.viewBox && viewport.viewBox[1]) || 0;
@@ -2843,6 +3241,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       qeFontCache = {};
       workingBytes = originalBuffer.slice(0);
       currentPage = 1;
+      clearDocumentFonts();
       insertedMeta.clear();
       insertedSymbols.clear();
       clearHistory();
@@ -3395,12 +3794,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           color: rgb(fill.r, fill.g, fill.b),
         });
       }
-      let fontKey = resolveFontKey(meta.fontKey, meta.bold);
-      let font = await getEmbeddedFont(fontKey);
-      if(isStdFontKey(fontKey) && !fontFullySupportsText(font, meta.text)){
-        fontKey = resolveFontKey("sarabun", meta.bold);
-        font = await getEmbeddedFont(fontKey);
-      }
+      const { font } = await fontForText(meta.fontKey, meta.bold, meta.text);
       const { r: tr, g: tg, b: tb } = hexToRgb01(meta.color);
       // A drag translates the already-rendered glyph directly by the mouse
       // delta (newX/newY is that glyph's new left edge/baseline) — it does
@@ -3570,11 +3964,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // Keep drag tracking in sync: this edit reuses the same origin, so a
       // box that was already draggable (came from "+ เพิ่มข้อความ", or a
       // previous edit that kept it tracked) stays draggable with its
-      // appearance refreshed to match what was just saved — unless the user
-      // picked "ฟอนต์ต้นฉบับ" (the auto-detected original-font option),
-      // whose raw font bytes aren't kept around for a future drag to reuse;
-      // in that one case drop tracking rather than risk redrawing a future
-      // drag in the wrong font.
+      // appearance refreshed to match what was just saved (detected fonts —
+      // this computer's or the document's own — stay registered in
+      // extraFonts, so a later drag redraws in the same font).
       const editKey = originKey(x, yBaseline);
       if(insertedMeta.has(editKey)){
         insertedMeta.delete(editKey);
@@ -3582,7 +3974,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         // x when center/right-aligned) — pdf.js will report the redrawn
         // glyph's own transform[4] there on the next render, and that's what
         // hit-testing/dragging look items up by.
-        if(newText.trim() !== "" && fontSelect.value !== "__original__"){
+        if(newText.trim() !== ""){
           insertedMeta.set(originKey(drawX, yBaseline), { text: newText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: colorInput.value });
         }
       }
