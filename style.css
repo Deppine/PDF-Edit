@@ -902,3 +902,74 @@ nav.tabs-groups{gap:16px;}
 .tool-main > [id$="-body"] .filelist:not(:empty){border:0; border-radius:0; background:transparent;}
 .tool-main > [id$="-body"] .filelist:not(:empty)::before{padding:2px 2px 12px;}
 .tool-main > [id$="-body"] .filelist .filecard{padding:12px 2px;}
+
+/* ===== แก้ไขเอกสาร — design A2: toolbar row, document left, edit card docked right ===== */
+#panel-quickedit{position:relative;}
+#panel-quickedit.qe-file-loaded > .panel-head{display:flex;}
+#panel-quickedit.qe-file-loaded > .desc,
+#panel-quickedit.qe-file-loaded .panel-body > .warn-note,
+#panel-quickedit.qe-file-loaded #quickedit-drop{display:none;}
+#panel-quickedit.qe-file-loaded > .panel-body{background:transparent; border:0; box-shadow:none; padding:0; margin-top:18px;}
+/* file chip sits beside the title */
+#panel-quickedit.qe-file-loaded #quickedit-fileinfo{
+  position:absolute; top:-2px; right:0; margin:0; max-width:min(460px, 50%);
+  background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:6px 6px 6px 12px;
+}
+#panel-quickedit.qe-file-loaded #quickedit-fileinfo .fileinfo-left svg{color:#c23b3b;}
+#panel-quickedit.qe-file-loaded #quickedit-fileinfo .fileinfo-name{font-size:14px; font-weight:500;}
+#panel-quickedit.qe-file-loaded #quickedit-fileinfo .btn{min-height:32px; border:0; background:transparent; color:var(--text-2); font-size:13px; font-weight:500;}
+#panel-quickedit.qe-file-loaded #quickedit-fileinfo .btn svg{display:none;}
+@media (max-width:900px){
+  #panel-quickedit.qe-file-loaded #quickedit-fileinfo{position:static; max-width:none; margin-bottom:14px;}
+}
+
+.qe-topbar{display:flex; flex-wrap:wrap; align-items:center; gap:10px 12px; margin-bottom:18px;}
+.qe-topbar .qe-mode-field{order:1; margin:0; min-width:0;}
+.qe-topbar .qe-mode-field > label{display:none;}
+.qe-topbar .qe-toolbar{display:contents;}
+.qe-topbar .qe-toolbar > *{order:2;}
+.qe-topbar #quickedit-prev{margin-left:auto;}
+.qe-topbar #quickedit-page-indicator{font-size:14px; font-weight:500; color:var(--text); padding:0 4px;}
+.qe-topbar .qe-symbol-field, .qe-topbar .qe-sig-field{order:3; flex-basis:100%; margin:0;}
+#quickedit-mode-toggle{gap:4px; background:var(--bg-2); border-radius:12px; padding:4px;}
+#quickedit-mode-toggle .chip{border:0; background:transparent; color:var(--text-2); min-height:36px; padding:0 14px; border-radius:9px; font-size:14px; font-weight:500;}
+#quickedit-mode-toggle .chip:hover{color:var(--text);}
+#quickedit-mode-toggle .chip.active{background:var(--panel); color:var(--accent); font-weight:600; box-shadow:0 1px 3px rgba(20,24,40,.12);}
+.qe-topbar .qe-toolbar .btn.secondary{min-height:38px; padding:6px 12px; background:var(--panel); border:1px solid var(--border); border-radius:10px; font-weight:500;}
+.qe-topbar .qe-toolbar .qe-hint{order:4; flex-basis:100%; text-align:right; margin:-4px 0 0; font-size:12.5px; color:var(--accent);}
+@media (max-width:900px){ .qe-topbar #quickedit-prev{margin-left:0;} .qe-topbar .qe-toolbar .qe-hint{text-align:left;} }
+
+.qe-workspace{display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:20px; align-items:start;}
+.qe-workspace .qe-stage-wrap{margin:0; border:0; border-radius:var(--radius-lg); background:var(--bg-2); padding:28px; max-height:none; min-height:420px;}
+.qe-dock{position:sticky; top:20px; min-width:0;}
+#quickedit-popover.qe-docked{
+  position:static !important; left:auto !important; top:auto !important;
+  width:100%; max-width:none; display:flex;
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-lg);
+  box-shadow:none; padding:20px; gap:14px;
+}
+#quickedit-popover.qe-docked[hidden]{display:flex;}
+#quickedit-popover.qe-docked.qe-sidepanel-empty{min-height:160px; justify-content:flex-start;}
+#quickedit-popover.qe-docked .qe-sidepanel-head{border-bottom:1px solid var(--border); padding-bottom:12px;}
+#quickedit-popover.qe-docked .qe-sidepanel-head > span{font-size:15px; color:var(--text);}
+#quickedit-popover.qe-docked .qe-sidepanel-empty-msg{font-size:14px; color:var(--text-2);}
+#quickedit-popover.qe-docked .qe-popover-actions .btn{min-height:44px; border-radius:10px; font-size:14.5px;}
+#quickedit-popover.qe-docked .qe-popover-actions #quickedit-apply{flex:1;}
+#quickedit-popover.qe-docked .qe-popover-row, #quickedit-popover.qe-docked .qe-popover-row > *{min-width:0;}
+#quickedit-popover.qe-docked textarea, #quickedit-popover.qe-docked select, #quickedit-popover.qe-docked input[type=number]{width:100%; box-sizing:border-box; min-height:42px; font-size:14px;}
+#quickedit-popover.qe-docked textarea{min-height:64px;}
+@media (max-width:1100px){
+  .qe-workspace{grid-template-columns:minmax(0,1fr);}
+  .qe-dock{position:static;}
+}
+
+.qe-bottombar{
+  margin-top:20px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 16px;
+}
+.qe-bottombar .row{margin:0; align-items:center; gap:12px;}
+.qe-bottombar .field-filename{flex:1 1 260px; max-width:420px; margin-left:auto; order:2;}
+.qe-bottombar .field-filename > label{display:none;}
+.qe-bottombar #quickedit-download{order:3; background:var(--text); color:var(--panel); min-height:42px;}
+.qe-bottombar #quickedit-reset-edits{order:1; min-height:42px;}
+.qe-bottombar .status{margin-top:8px;}
+.qe-bottombar .status:empty{display:none;}

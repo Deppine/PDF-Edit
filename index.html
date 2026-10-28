@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261028d" />
+<link rel="stylesheet" href="style.css?v=20261028e" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -968,7 +968,8 @@
         </button>
       </div>
 
-      <div class="field" style="margin-bottom:12px;">
+      <div class="qe-topbar">
+      <div class="field qe-mode-field">
         <label>โหมดแก้ไข</label>
         <div class="chip-group" id="quickedit-mode-toggle">
           <button type="button" class="chip active" id="quickedit-mode-edit" data-mode="edit">แก้ไขข้อความเดิม</button>
@@ -1020,7 +1021,9 @@
         <button class="btn secondary small" id="quickedit-redo-bar" title="ทำซ้ำ (Ctrl+Y)" disabled>↷ ทำซ้ำ</button>
         <span class="qe-hint" id="quickedit-hint">คลิกกล่องข้อความสีม่วงบนเอกสารเพื่อแก้ไข</span>
       </div>
+      </div>
 
+      <div class="qe-workspace">
       <div class="qe-stage-wrap">
         <div class="qe-stage" id="quickedit-stage">
           <canvas id="quickedit-canvas"></canvas>
@@ -1029,7 +1032,16 @@
           <div class="qe-preview-mask" id="quickedit-preview-mask" hidden></div>
           <div class="qe-preview-box" id="quickedit-preview" hidden></div>
 
-          <div class="qe-sidepanel qe-sidepanel-floating qe-sidepanel-empty" id="quickedit-popover" hidden>
+
+
+        <div class="qe-symbol-popover" id="quickedit-symbol-popover" hidden>
+          <button type="button" class="btn danger small" id="quickedit-symbol-delete">ลบสัญลักษณ์นี้</button>
+          <button type="button" class="btn secondary small" id="quickedit-symbol-cancel">ยกเลิก</button>
+        </div>
+        </div>
+      </div>
+        <aside class="qe-dock" aria-label="แก้ไขข้อความ">
+          <div class="qe-sidepanel qe-sidepanel-floating qe-sidepanel-empty qe-docked" id="quickedit-popover" hidden>
           <div class="qe-sidepanel-head">
             <span id="quickedit-popover-head">รูปแบบข้อความ</span>
             <div class="qe-history-btns">
@@ -1094,14 +1106,10 @@
             </div>
           </div>
         </div>
-
-        <div class="qe-symbol-popover" id="quickedit-symbol-popover" hidden>
-          <button type="button" class="btn danger small" id="quickedit-symbol-delete">ลบสัญลักษณ์นี้</button>
-          <button type="button" class="btn secondary small" id="quickedit-symbol-cancel">ยกเลิก</button>
-        </div>
-        </div>
+        </aside>
       </div>
 
+      <div class="qe-bottombar">
       <div class="row">
         <div class="field field-filename">
           <label>ชื่อไฟล์ก่อนดาวน์โหลด</label>
@@ -1117,6 +1125,7 @@
         <button class="btn secondary" id="quickedit-reset-edits">ล้างการแก้ไขทั้งหมด (เริ่มจากไฟล์เดิม)</button>
       </div>
       <div class="status" id="quickedit-status"></div>
+      </div>
     </div>
     </div>
   </section>
@@ -1732,7 +1741,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261028d"></script>
+<script src="script.js?v=20261028e"></script>
 
 </body>
 </html>

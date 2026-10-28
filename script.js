@@ -2864,6 +2864,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // settled, and (2) a ResizeObserver that re-clamps whenever the popover's
   // box size changes afterwards (e.g. the async original-font hint text
   // appearing under the font select).
+  // The edit card is docked beside the document; on narrow screens it sits
+  // below it instead, so bring it into view when it opens.
+  function revealDockedEditor(){
+    if(!popover || !popover.classList.contains("qe-docked")) return;
+    if(!window.matchMedia("(max-width:1100px)").matches) return;
+    requestAnimationFrame(()=> popover.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }
   function repositionPopoverSoon(){
     requestAnimationFrame(()=>{
       requestAnimationFrame(()=>{
@@ -2918,6 +2925,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     popover.hidden = false;
     positionPopoverNear(x, yBaseline);
     repositionPopoverSoon();
+    revealDockedEditor();
     textarea.focus();
     updatePreview();
   }
@@ -2949,6 +2957,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     popover.hidden = false;
     positionPopoverNear(tx0[4], tx0[5]);
     repositionPopoverSoon();
+    revealDockedEditor();
     textarea.focus();
     textarea.select();
     updatePreview();
