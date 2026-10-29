@@ -3581,6 +3581,87 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }catch(e){ return { r:1, g:1, b:1 }; }
   }
 
+  // Placed symbols are wrapped in their own marked-content block
+  // ("q /LyraSym… BMC … EMC Q") so deleting or moving one can take exactly
+  // those drawing operators back OUT of the page's content stream. The old
+  // approach — painting a background-colored box over the symbol — left
+  // visible gray/white squares wherever the symbol sat on a table line or a
+  // shaded cell. The cover box is only kept as a fallback for symbols that
+  // were placed before this existed (no tag) or whose block can't be found.
+  function newSymbolTag(){
+    return "LyraSym" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function drawTaggedSymbol(page, meta, cx, cy){
+    const spec = SYMBOL_SPECS[meta.symbolKey];
+    if(!spec) return;
+    const { r, g, b } = hexToRgb01(meta.color);
+    page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.beginMarkedContent(meta.tag));
+    spec.draw(page, cx - meta.size/2, cy - meta.size/2, meta.size, rgb(r, g, b));
+    page.pushOperators(PDFLib.endMarkedContent(), PDFLib.popGraphicsState());
+  }
+  function bytesToLatin1(bytes){
+    let out = "";
+    for(let i=0; i<bytes.length; i+=0x8000) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return out;
+  }
+  function latin1ToBytes(str){
+    const out = new Uint8Array(str.length);
+    for(let i=0; i<str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+    return out;
+  }
+  // Finds "q /TAG BMC … EMC Q" (the EMC that closes THIS block, skipping any
+  // nested marked content) and returns [start, end) or null.
+  function findTaggedBlock(text, tag){
+    const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const open = new RegExp("(?:\\bq\\s+)?\\/" + esc + "\\s+BMC\\b").exec(text);
+    if(!open) return null;
+    const re = /\b(BMC|BDC|EMC)\b/g;
+    re.lastIndex = open.index + open[0].length;
+    let depth = 1, m;
+    while((m = re.exec(text))){
+      if(m[1] === "EMC"){ if(--depth === 0) break; }
+      else depth++;
+    }
+    if(!m) return null;
+    let end = m.index + 3;
+    const tail = /^\s*Q\b/.exec(text.slice(end));
+    if(tail && /^\s*q\s/.test(open[0])) end += tail[0].length;
+    return [open.index, end];
+  }
+  function removeTaggedSymbol(doc, page, tag){
+    if(!tag) return false;
+    try{
+      const context = doc.context;
+      const raw = page.node.get(PDFName.of("Contents"));
+      if(!raw) return false;
+      const lookedUp = context.lookup(raw);
+      const refs = lookedUp instanceof PDFArray ? lookedUp.asArray() : [raw];
+      for(const ref of refs){
+        const stream = context.lookup(ref);
+        if(!(stream instanceof PDFRawStream)) continue;
+        const text = bytesToLatin1(decodePDFRawStream(stream).decode());
+        const span = findTaggedBlock(text, tag);
+        if(!span) continue;
+        const next = text.slice(0, span[0]) + text.slice(span[1]);
+        const newStream = context.flateStream(latin1ToBytes(next));
+        if(ref instanceof PDFLib.PDFRef) context.assign(ref, newStream);
+        else page.node.set(PDFName.of("Contents"), context.register(newStream));
+        return true;
+      }
+    }catch(e){ /* fall back to the cover box */ }
+    return false;
+  }
+  function coverSymbolBox(page, meta){
+    const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
+    const fill = sampleBgColorForBox(boxX, boxY, meta.size);
+    const pad = Math.max(1, meta.size * 0.08);
+    page.drawRectangle({
+      x: boxX - pad, y: boxY - pad,
+      width: meta.size + pad*2, height: meta.size + pad*2,
+      color: rgb(fill.r, fill.g, fill.b),
+    });
+  }
+
   // Stamps the currently-selected symbol centered on the clicked point
   // (xPdf,yPdf) — "click = where you're stamping", unlike inserted text's
   // baseline-left click convention, since a symbol has no natural reading
@@ -3601,10 +3682,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const { r, g, b } = hexToRgb01(color);
-      spec.draw(page, xPdf - size/2, yPdf - size/2, size, rgb(r, g, b));
+      const meta = { symbolKey: selectedSymbolKey, size, color, x: xPdf, y: yPdf, tag: newSymbolTag() };
+      drawTaggedSymbol(page, meta, xPdf, yPdf);
       workingBytes = await workingDoc.save();
-      insertedSymbols.set(originKey(xPdf, yPdf), { symbolKey: selectedSymbolKey, size, color, x: xPdf, y: yPdf });
+      insertedSymbols.set(originKey(xPdf, yPdf), meta);
       await renderCurrentPage();
       setStatus(status, "แทรกสัญลักษณ์แล้ว", "ok");
     }catch(e){
@@ -3721,14 +3802,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
-      const fill = sampleBgColorForBox(boxX, boxY, meta.size);
-      const pad = Math.max(1, meta.size * 0.08);
-      page.drawRectangle({
-        x: boxX - pad, y: boxY - pad,
-        width: meta.size + pad*2, height: meta.size + pad*2,
-        color: rgb(fill.r, fill.g, fill.b),
-      });
+      if(!removeTaggedSymbol(workingDoc, page, meta.tag)) coverSymbolBox(page, meta);
       workingBytes = await workingDoc.save();
       await renderCurrentPage();
       setStatus(status, "ลบสัญลักษณ์แล้ว", "ok");
@@ -3939,22 +4013,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      // Erase the old position the same way deleteInsertedSymbol does (a
-      // sampled-background cover rectangle — these are vector graphics, not
-      // a text run, so there's no Tj/TJ operator to surgically remove).
-      const oldBoxX = meta.x - meta.size/2, oldBoxY = meta.y - meta.size/2;
-      const fill = sampleBgColorForBox(oldBoxX, oldBoxY, meta.size);
-      const pad = Math.max(1, meta.size * 0.08);
-      page.drawRectangle({
-        x: oldBoxX - pad, y: oldBoxY - pad,
-        width: meta.size + pad*2, height: meta.size + pad*2,
-        color: rgb(fill.r, fill.g, fill.b),
-      });
-      const spec = SYMBOL_SPECS[meta.symbolKey];
-      const { r, g, b } = hexToRgb01(meta.color);
-      if(spec) spec.draw(page, newX - meta.size/2, newY - meta.size/2, meta.size, rgb(r, g, b));
+      // take the old drawing out (see removeTaggedSymbol), then draw it again at the new spot
+      if(!removeTaggedSymbol(workingDoc, page, meta.tag)) coverSymbolBox(page, meta);
+      const moved = Object.assign({}, meta, { x: newX, y: newY, tag: newSymbolTag() });
+      drawTaggedSymbol(page, moved, newX, newY);
       workingBytes = await workingDoc.save();
-      insertedSymbols.set(originKey(newX, newY), Object.assign({}, meta, { x: newX, y: newY }));
+      insertedSymbols.set(originKey(newX, newY), moved);
       await renderCurrentPage();
       setStatus(status, "ย้ายสัญลักษณ์แล้ว", "ok");
     }catch(e){
