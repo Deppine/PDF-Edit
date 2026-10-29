@@ -6195,6 +6195,187 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, "images", ".pdf")); };
 })();
 
+/* ================= PDF TO JPG ================= */
+(function(){
+  const drop = document.getElementById("pdfjpg-drop");
+  if(!drop) return;
+  const input = document.getElementById("pdfjpg-input");
+  const body = document.getElementById("pdfjpg-body");
+  const grid = document.getElementById("pdfjpg-grid");
+  const rangeInput = document.getElementById("pdfjpg-range");
+  const allBtn = document.getElementById("pdfjpg-all");
+  const noneBtn = document.getElementById("pdfjpg-none");
+  const formatSel = document.getElementById("pdfjpg-format");
+  const dpiSel = document.getElementById("pdfjpg-dpi");
+  const qualityField = document.getElementById("pdfjpg-quality-field");
+  const qRange = document.getElementById("pdfjpg-quality");
+  const qVal = document.getElementById("pdfjpg-q-val");
+  const runBtn = document.getElementById("pdfjpg-run");
+  const progress = document.getElementById("pdfjpg-progress");
+  const status = document.getElementById("pdfjpg-status");
+  const result = document.getElementById("pdfjpg-result");
+  const downloadBtn = document.getElementById("pdfjpg-download");
+  const filenameEl = document.getElementById("pdfjpg-filename");
+  const filenameInput = document.getElementById("pdfjpg-filename-input");
+  const filenameExtEl = document.getElementById("pdfjpg-filename-ext");
+  const removeBtn = document.getElementById("pdfjpg-remove");
+
+  let buffer = null, fileName = "document", numPages = 0, selected = new Set();
+  let outputBlob = null, outputBase = "", outputExt = ".zip";
+  let loadSeq = 0;
+  // Browsers refuse canvases much past ~16k px per side / ~268M px² (and
+  // phones far less); keep each rendered page safely below that.
+  const MAX_SIDE = 12000, MAX_AREA = 60e6;
+
+  function syncQualityField(){ qualityField.style.display = formatSel.value === "jpg" ? "" : "none"; }
+  formatSel.addEventListener("change", ()=>{ syncQualityField(); clearResult(); });
+  dpiSel.addEventListener("change", clearResult);
+  qRange.addEventListener("input", ()=>{ qVal.textContent = qRange.value + "%"; clearResult(); });
+  syncQualityField();
+
+  function clearResult(){ outputBlob = null; result.classList.remove("show"); }
+  function syncRunBtn(){ runBtn.disabled = !buffer || selected.size === 0; }
+  function syncGridFromSelection(){
+    Array.from(grid.children).forEach((cell, i)=> cell.classList.toggle("sel", selected.has(i+1)));
+    syncRunBtn(); clearResult();
+  }
+
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    if(!file) return;
+    const seq = ++loadSeq;
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    grid.innerHTML = "";
+    clearResult();
+    setStatus(status, "กำลังโหลดหน้าเอกสาร...", "loading");
+    let pdfjsDoc = null;
+    try{
+      pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      numPages = pdfjsDoc.numPages;
+      selected = new Set(Array.from({ length: numPages }, (_, i)=> i + 1)); // default: every page
+      rangeInput.value = numPages ? `1-${numPages}` : "";
+      for(let i=1; i<=numPages; i++){
+        if(seq !== loadSeq) return; // a newer file replaced this one
+        const page = await pdfjsDoc.getPage(i);
+        const viewport = page.getViewport({ scale: 70 / page.getViewport({ scale: 1 }).width });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        const cell = document.createElement("div");
+        cell.className = "pagecell sel";
+        cell.appendChild(canvas);
+        const num = document.createElement("div");
+        num.className = "num"; num.textContent = i;
+        cell.appendChild(num);
+        cell.onclick = ()=>{
+          if(selected.has(i)) selected.delete(i); else selected.add(i);
+          cell.classList.toggle("sel", selected.has(i));
+          rangeInput.value = rangesToString(Array.from(selected));
+          syncRunBtn(); clearResult();
+        };
+        grid.appendChild(cell);
+      }
+      setStatus(status, `โหลดสำเร็จ · ทั้งหมด ${numPages} หน้า`, "ok");
+    }catch(e){
+      buffer = null;
+      const msg = (e && e.name === "PasswordException")
+        ? 'ไฟล์นี้ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน'
+        : "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message);
+      setStatus(status, msg, "err");
+    }finally{
+      if(pdfjsDoc) pdfjsDoc.destroy();
+      syncRunBtn();
+    }
+  });
+
+  rangeInput.addEventListener("input", ()=>{ selected = new Set(parseRanges(rangeInput.value, numPages)); syncGridFromSelection(); });
+  allBtn.onclick = ()=>{ rangeInput.value = numPages ? `1-${numPages}` : ""; selected = new Set(parseRanges(rangeInput.value, numPages)); syncGridFromSelection(); };
+  noneBtn.onclick = ()=>{ rangeInput.value = ""; selected = new Set(); syncGridFromSelection(); };
+
+  function canvasToBlob(canvas, type, quality){
+    return new Promise((resolve, reject)=> canvas.toBlob(b => b ? resolve(b) : reject(new Error("สร้างรูปภาพไม่สำเร็จ (หน้าอาจใหญ่เกินไป ลองลดความละเอียด)")), type, quality));
+  }
+
+  runBtn.onclick = async ()=>{
+    const pages = Array.from(selected).sort((a, b)=> a - b);
+    if(!buffer || !pages.length) return;
+    const fmt = formatSel.value;
+    const mime = fmt === "png" ? "image/png" : "image/jpeg";
+    const ext = fmt === "png" ? ".png" : ".jpg";
+    const quality = parseInt(qRange.value, 10) / 100;
+    const dpi = parseInt(dpiSel.value, 10) || 150;
+    const pad = String(numPages).length;
+    runBtn.disabled = true; clearResult();
+    progress.style.display = "block"; progress.value = 0;
+    let pdfjsDoc = null;
+    try{
+      pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      const images = [];
+      let shrunk = false;
+      for(let k=0; k<pages.length; k++){
+        const n = pages[k];
+        setStatus(status, `กำลังแปลงหน้า ${n} (${k+1}/${pages.length})...`, "loading");
+        const page = await pdfjsDoc.getPage(n);
+        let scale = dpi / 72;
+        const base = page.getViewport({ scale: 1 });
+        const fit = Math.min(1, MAX_SIDE / (base.width * scale), MAX_SIDE / (base.height * scale), Math.sqrt(MAX_AREA / (base.width * base.height * scale * scale)));
+        if(fit < 1){ scale *= fit; shrunk = true; }
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+        const ctx = canvas.getContext("2d");
+        // white page like every PDF viewer shows it (a transparent PNG looks black in some apps)
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const blob = await canvasToBlob(canvas, mime, fmt === "jpg" ? quality : undefined);
+        canvas.width = canvas.height = 0; // free the pixels right away
+        page.cleanup();
+        images.push({ n, blob });
+        progress.value = Math.round(((k+1) / pages.length) * 100);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      if(images.length === 1){
+        outputBlob = images[0].blob;
+        outputExt = ext;
+        outputBase = numPages > 1 ? `${fileName}_page-${String(images[0].n).padStart(pad, "0")}` : fileName;
+      }else{
+        const zip = new JSZip();
+        images.forEach(({ n, blob })=> zip.file(`${sanitizeFilename(fileName)}_page-${String(n).padStart(pad, "0")}${ext}`, blob));
+        setStatus(status, "กำลังรวมไฟล์เป็น ZIP...", "loading");
+        outputBlob = await zip.generateAsync({ type: "blob" });
+        outputExt = ".zip";
+        outputBase = `${fileName}_${fmt}`;
+      }
+      filenameExtEl.textContent = outputExt;
+      setFilenameDefault(filenameInput, outputBase);
+      result.querySelector(".stats").innerHTML = `<b>${images.length}</b> รูป (${fmt.toUpperCase()}) · <b>${fmtBytes(outputBlob.size)}</b>`;
+      result.classList.add("show");
+      setStatus(status, shrunk ? "แปลงสำเร็จ (บางหน้าใหญ่มาก ระบบลดความละเอียดลงให้พอดี)" : "แปลงสำเร็จ", shrunk ? "warn" : "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }finally{
+      if(pdfjsDoc) pdfjsDoc.destroy();
+      progress.style.display = "none";
+      syncRunBtn();
+    }
+  };
+
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, outputBase || fileName, outputExt)); };
+
+  removeBtn.onclick = ()=>{
+    loadSeq++;
+    buffer = null; numPages = 0; selected = new Set(); clearResult();
+    grid.innerHTML = ""; rangeInput.value = "";
+    body.style.display = "none"; input.value = "";
+    progress.style.display = "none";
+    setStatus(status, "", "");
+    syncRunBtn();
+  };
+})();
+
 /* ================= PDF TO WORD =================
    Client-side-only text extraction + reflow: reads each page's text items
    via pdf.js getTextContent(), clusters them into lines/paragraphs by

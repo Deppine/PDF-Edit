@@ -977,3 +977,4 @@ nav.tabs-groups{gap:16px;}
 /* original Lyra logo in the sidebar */
 .sidebar-top .logo-img{height:40px; width:auto; margin-left:4px;}
 @media (max-width:900px){ .sidebar-top .logo-img{height:32px; margin-left:0;} }
+#pdfjpg-grid.pagegrid{max-height:420px;}
