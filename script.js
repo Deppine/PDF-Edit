@@ -5540,6 +5540,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const numwarnTextEl = document.getElementById("ocr-numwarn-text");
   const result = document.getElementById("ocr-result");
   const downloadTextBtn = document.getElementById("ocr-download-text");
+  const downloadTxtBtn = document.getElementById("ocr-download-txt");
   const filenameInput = document.getElementById("ocr-filename-input");
   const filenameExtEl = document.getElementById("ocr-filename-ext");
   const filenameLabelEl = document.getElementById("ocr-filename-label");
@@ -5957,7 +5958,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         setStatus(status, cancelledOverall ? "หยุดก่อนได้ผลลัพธ์ใดๆ" : "เกิดข้อผิดพลาด ไม่มีไฟล์ที่ทำสำเร็จ", cancelledOverall ? "warn" : "err");
       }else if(items.length === 1){
         const it = doneItems[0];
-        filenameExtEl.textContent = ".docx";
+        filenameExtEl.textContent = ".docx / .txt";
         filenameLabelEl.textContent = "ชื่อไฟล์ก่อนดาวน์โหลด";
         setFilenameDefault(filenameInput, `${it.fileName}_ocr_text`);
         result.querySelector(".stats").innerHTML = it.statsText;
@@ -6007,7 +6008,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       lines.forEach((line, li)=>{
         children.push(new Paragraph({
           pageBreakBefore: p > 0 && li === 0,
-          children: [ new TextRun({ text: stripXmlIllegalChars(line) || " ", font: "Tahoma", size: 24 }) ],
+          children: [ new TextRun({ text: stripXmlIllegalChars(line).replace(/\u0E4D\u0E32/g, "\u0E33") || " ", font: "Tahoma", size: 24 }) ],
         }));
       });
     }
@@ -6042,6 +6043,41 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }
     downloadTextBtn.disabled = false;
   };
+
+  // "ดาวน์โหลดข้อความ (.txt)" — the same OCR text as plain text: UTF-8 with
+  // a BOM and Windows line endings so Thai shows correctly when opened in
+  // Notepad/Excel on Windows; each page starts with a "=== หน้า N ===" line.
+  function buildOcrText(it){
+    const total = it.total || (it.pageTexts ? it.pageTexts.length : 0);
+    const parts = [];
+    for(let p = 0; p < total; p++){
+      const pageText = (it.pageTexts && it.pageTexts[p]) ? it.pageTexts[p] : "";
+      const clean = stripXmlIllegalChars(pageText).replace(/\u0E4D\u0E32/g, "\u0E33").replace(/\r?\n/g, "\r\n").trimEnd(); // OCR spells SARA AM as NIKHAHIT+SARA AA
+      parts.push((total > 1 ? "=== หน้า " + (p + 1) + " ===\r\n" : "") + clean);
+    }
+    return new Blob(["\uFEFF" + parts.join("\r\n\r\n") + "\r\n"], { type: "text/plain;charset=utf-8" });
+  }
+  if(downloadTxtBtn){
+    downloadTxtBtn.onclick = async ()=>{
+      if(!lastDoneItems.length || downloadTxtBtn.disabled) return;
+      downloadTxtBtn.disabled = true;
+      try{
+        if(lastDoneItems.length === 1){
+          const it = lastDoneItems[0];
+          downloadBlob(buildOcrText(it), resolveFilename(filenameInput, `${it.fileName}_ocr_text`, ".txt"));
+        }else{
+          const zip = new JSZip();
+          for(const it of lastDoneItems) zip.file(`${sanitizeFilename(it.fileName)}_ocr_text.txt`, buildOcrText(it));
+          const zipBlob = await zip.generateAsync({ type:"blob" });
+          downloadBlob(zipBlob, resolveFilename(filenameInput, "ocr_text_results", ".zip"));
+        }
+        setStatus(status, "ดาวน์โหลดไฟล์ข้อความ (.txt) แล้ว", "ok");
+      }catch(e){
+        setStatus(status, "สร้างไฟล์ .txt ไม่สำเร็จ: " + e.message, "err");
+      }
+      downloadTxtBtn.disabled = false;
+    };
+  }
 })();
 
 /* ================= JPG TO PDF ================= */
