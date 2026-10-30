@@ -2561,7 +2561,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let id = fk._cmapProcessor ? fk._cmapProcessor.lookup(cp) : 0;
       if(!id && extra && extra.has(cp)) id = extra.get(cp);
       if(!id) return 0;
-      const g = fk.getGlyph(id);
+      // pass the code point: fontkit caches glyph objects by id, and the
+      // embedded font reuses them when writing the PDF's /ToUnicode — a
+      // glyph first created without its code point would copy/search as
+      // nothing (this dropped "ก" from saved text)
+      const g = fk.getGlyph(id, [cp]);
       const bb = g && g.bbox;
       return bb && bb.maxY > 0 ? bb.maxY / fk.unitsPerEm : 0;
     }catch(e){ return 0; }
@@ -4012,11 +4016,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // the box's own click listener) rather than a drag, so short accidental
   // wiggles between mousedown/mouseup don't move anything.
   const DRAG_THRESHOLD = 4;
+  function clearTextSelection(){
+    try{ const sel = window.getSelection && window.getSelection(); if(sel && sel.rangeCount) sel.removeAllRanges(); }catch(e){}
+  }
   function wireDrag(div, item, key){
     div.style.touchAction = "none";
     div.addEventListener("pointerdown", (e)=>{
       if(e.button !== 0) return;
       e.stopPropagation();
+      // stop the browser from starting a text selection on the hidden
+      // text layer (it showed up as white-on-blue "ghost" letters while
+      // dragging and could linger over the moved text afterwards)
+      e.preventDefault();
+      clearTextSelection();
       const startX = e.clientX, startY = e.clientY;
       const baseTransform = div.style.transform;
       const rect = canvasEl.getBoundingClientRect();
@@ -4038,6 +4050,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         div.removeEventListener("pointerup", onUp);
         div.removeEventListener("pointercancel", onUp);
         div.classList.remove("qe-box-dragging");
+        clearTextSelection();
         if(!dragging) return; // plain click — let the normal click handler run
         suppressNextClick = true;
         const dxCss = ev.clientX - startX, dyCss = ev.clientY - startY;
