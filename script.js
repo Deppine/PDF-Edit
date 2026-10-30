@@ -2180,11 +2180,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
   /* ---------- 2. the PDF's own embedded font, via pdf.js ---------- */
   let _cssFontSeq = 0;
-  function registerCssFont(bytes){
+  function registerCssFont(bytes, isBold){
     // lets the live preview box show the real font too; purely cosmetic
     try{
       const family = "qe-detected-" + (++_cssFontSeq);
-      const face = new FontFace(family, bytes.slice(0));
+      // declare the face's real weight so a bold original isn't bolded again by the browser
+      const face = new FontFace(family, bytes.slice(0), { weight: isBold ? "700" : "400" });
       document.fonts.add(face);
       face.load().catch(()=>{});
       return family;
@@ -2269,7 +2270,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         displayName: name,
         bytes, load: async()=> bytes, charSet, cmapExtra: extra,
         bold: !!(info.bold), fallbackKey,
-        cssFamily: registerCssFont(bytes),
+        cssFamily: registerCssFont(bytes, !!info.bold),
         noSubset: false,
       });
       return key;
@@ -2566,13 +2567,17 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }catch(e){ return 0; }
   }
   async function sizeScaleBetween(entry, fallbackFont, text){
+    if(!fallbackFont) return 1;
+    const fbFk = fontkitOf(fallbackFont);
+    const fbAfm = !fbFk && fallbackFont.embedder ? fallbackFont.embedder.font : null;
+    return scaleFromFonts(entry, fbFk, fbAfm, text);
+  }
+  async function scaleFromFonts(entry, fbFk, fbAfm, text){
     try{
-      if(!entry || !fallbackFont) return 1;
+      if(!entry || (!fbFk && !fbAfm)) return 1;
       const bytes = await ensureExtraFontBytes(entry);
       if(!entry.fk) entry.fk = fontkit.create(bytes);
       const thai = THAI_CHAR_RE.test(text || "") || !/[a-z]/i.test(text || "");
-      const fbFk = fontkitOf(fallbackFont);
-      const fbAfm = !fbFk && fallbackFont.embedder ? fallbackFont.embedder.font : null;
       for(const ch of (thai ? REF_CHARS_THAI : REF_CHARS_LATIN)){
         const cp = ch.codePointAt(0);
         const hOrig = glyphTop(entry.fk, cp, entry.cmapExtra);
@@ -2802,6 +2807,57 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // already means "this is the text's left/center/right edge" — the same
   // anchor is used for every align value, matching computeAlignedX()'s
   // refWidth===null branch.
+  // Live preview fonts: built-in fonts get a CSS @font-face made from the
+  // same bytes that will be embedded, so the preview box shows what saving
+  // will actually draw (it used to fall back to the page's own UI font).
+  const _builtinCss = {};
+  function builtinCssFamily(key){
+    if(_builtinCss[key] !== undefined) return _builtinCss[key];
+    const list = window.__QE_FONTS || [];
+    const reg = list.find(f => f.key === key && !f.bold);
+    if(!reg){ _builtinCss[key] = ""; return ""; }
+    const fam = "qe-builtin-" + key;
+    try{
+      const add = (entry, weight)=>{
+        const ff = new FontFace(fam, qeFontBytes(entry.key).slice(0), { weight });
+        document.fonts.add(ff);
+        ff.load().then(()=> updatePreview()).catch(()=>{});
+      };
+      add(reg, "400");
+      const b = list.find(f => f.bold && f.base === key);
+      if(b) add(b, "700");
+    }catch(e){ _builtinCss[key] = ""; return ""; }
+    _builtinCss[key] = "'" + fam + "'";
+    return _builtinCss[key];
+  }
+  const STD_CSS = { "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" };
+  function cssFamilyForKey(key){
+    if(STD_CSS[key]) return STD_CSS[key];
+    if(extraFonts.has(key)) return extraFonts.get(key).cssFamily || "";
+    return builtinCssFamily(key);
+  }
+  // Same letter-height matching the save path applies (fontForText), cached
+  // per font pair so typing stays instant; computed once in the background.
+  const _previewScale = {};
+  function previewScaleFor(entryKey, fbKey, wantBold, text){
+    const thai = THAI_CHAR_RE.test(text || "") || !/[a-z]/i.test(text || "");
+    const id = entryKey + "|" + fbKey + "|" + (wantBold ? 1 : 0) + "|" + (thai ? "th" : "la");
+    if(_previewScale[id] !== undefined) return _previewScale[id] || 1;
+    _previewScale[id] = 0; // pending
+    (async ()=>{
+      let sc = 1;
+      try{
+        if(!isStdFontKey(fbKey)){
+          const fbFk = fontkit.create(qeFontBytes(resolveFontKey(fbKey, wantBold)));
+          sc = await scaleFromFonts(extraFonts.get(entryKey), fbFk, null, text);
+        }
+      }catch(e){ sc = 1; }
+      _previewScale[id] = Math.abs(sc - 1) > 0.03 ? sc : 1;
+      updatePreview();
+    })();
+    return 1;
+  }
+
   function updatePreview(){
     if(!previewEl) return;
     const editing = !!activeItem, inserting = !!insertPos;
@@ -2819,13 +2875,27 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     // it 2-4x bigger than the real thing — exactly the "text jumps huge the
     // instant I click it" bug. Let it go as small as the math says; only
     // guard the degenerate 0-or-negative case (bad/empty input).
-    const sizePx = Math.max(0.5, size * pageScale);
+    // Preview what saving will really draw: a detected font that lacks some
+    // of the typed characters is swapped for its built-in fallback (with the
+    // same letter-height scaling), exactly like fontForText does on save.
+    const wantBoldPv = !!(boldCheckbox && boldCheckbox.checked);
+    let previewKey = fontSelect.value, previewScale = 1;
+    const pvEntry = extraFonts.get(previewKey);
+    if(pvEntry && pvEntry.charSet && !charSetCovers(pvEntry.charSet, textarea.value)){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, wantBoldPv, textarea.value);
+      previewKey = fb;
+    }else if(pvEntry && wantBoldPv && !pvEntry.bold && !(pvEntry.boldKey && extraFonts.has(pvEntry.boldKey))){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, true, textarea.value);
+      previewKey = fb;
+    }
+    const sizePx = Math.max(0.5, size * previewScale * pageScale);
     const align = getSelectedAlign();
 
     previewEl.textContent = textarea.value;
     previewEl.style.color = colorInput.value || "#000000";
-    previewEl.style.fontFamily = ({ "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" })[fontSelect.value]
-      || (extraFonts.has(fontSelect.value) ? extraFonts.get(fontSelect.value).cssFamily : "") || "";
+    previewEl.style.fontFamily = cssFamilyForKey(previewKey) || "";
     previewEl.style.fontWeight = (boldCheckbox && boldCheckbox.checked) ? "700" : "400";
     previewEl.style.fontStyle = (italicCheckbox && italicCheckbox.checked) ? "italic" : "normal";
     previewEl.style.textDecoration = (underlineCheckbox && underlineCheckbox.checked) ? "underline" : "none";
