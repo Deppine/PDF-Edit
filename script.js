@@ -1946,6 +1946,25 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // inserted text's baseline-left convention.
   const insertedSymbols = new Map();
   let currentPjsDoc = null, retiredPjsDoc = null, currentPjsPage = null;
+  let currentTextItems = [];
+  // The existing text closest to a point on the page (PDF coordinates), used
+  // so "+ เพิ่มข้อความใหม่" starts with the same font/size/colour as the
+  // line it's being added next to. Ignores text too far away to be related.
+  function nearestTextItem(x, yBaseline){
+    let best = null, bestScore = Infinity;
+    for(const it of currentTextItems){
+      if(!it || !it.str || !it.str.trim() || !it.transform) continue;
+      const t = it.transform;
+      const sz = Math.hypot(t[2], t[3]) || 10;
+      const ix = t[4], iy = t[5], w = it.width || sz * it.str.length * 0.5;
+      const dx = x < ix ? ix - x : (x > ix + w ? x - (ix + w) : 0);
+      const dy = Math.abs(yBaseline - iy);
+      if(dy > Math.max(sz * 3, 36) || dx > 320) continue;
+      const score = dy * 2 + dx * 0.4;
+      if(score < bestScore){ bestScore = score; best = it; }
+    }
+    return best;
+  }
   function originKey(x, y){ return Math.round(x*2) + "," + Math.round(y*2); }
   let suppressNextClick = false; // set right before a drag-release so the click event the browser still fires afterward doesn't also pop the edit popover open
 
@@ -2437,12 +2456,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
   let detectSeq = 0;
   let pendingLocalInfo = null;
-  async function tryDetectOriginalFont(item){
+  let detectTarget = null; // { item, insert } — what the "find on this computer" button re-runs
+  // `item` is the clicked text — or, in "+ เพิ่มข้อความใหม่" mode, the text
+  // nearest to the click point (opts.insert), so new text matches its neighbours.
+  async function tryDetectOriginalFont(item, opts){
+    opts = opts || {};
     const seq = ++detectSeq;
     if(localFontBtn) localFontBtn.hidden = true;
     pendingLocalInfo = null;
+    detectTarget = { item, insert: !!opts.insert, pos: opts.insert ? insertPos : null };
     if(!workingBytes) return;
-    const stale = ()=> seq !== detectSeq || activeItem !== item;
+    const myPos = insertPos;
+    const stale = ()=> seq !== detectSeq || (opts.insert ? (!insertPos || insertPos !== myPos) : activeItem !== item);
+    const nearPrefix = opts.insert ? "ตั้งค่าตามข้อความใกล้เคียง “" + cleanExtractedText(item.str).trim().slice(0, 24) + "” · " : "";
     try{
       const info = await getSourceFontInfo(item);
       if(stale()) return;
@@ -2459,7 +2485,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           if(stale()) return;
           if(res && res.key){
             selectDetectedFont(res.key, info);
-            if(fontHintEl) fontHintEl.textContent = "ใช้ฟอนต์ " + extraFonts.get(res.key).displayName + " จากเครื่องนี้ — ตรงกับฟอนต์ในเอกสาร (" + info.name + ")";
+            if(fontHintEl) fontHintEl.textContent = nearPrefix + "ใช้ฟอนต์ " + extraFonts.get(res.key).displayName + " จากเครื่องนี้ — ตรงกับฟอนต์ในเอกสาร (" + info.name + ")";
             return;
           }
           notes.push(res && res.error ? res.error : "ไม่พบฟอนต์ " + info.name + " ในเครื่องนี้");
@@ -2475,7 +2501,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       if(origKey && charSetCovers(extraFonts.get(origKey).charSet, item.str)){
         selectDetectedFont(origKey, info);
         if(fontHintEl){
-          fontHintEl.textContent = (notes.length ? notes.join(" · ") + " — " : "")
+          fontHintEl.textContent = nearPrefix + (notes.length ? notes.join(" · ") + " — " : "")
             + "ใช้ฟอนต์ต้นฉบับจากไฟล์ (" + extraFonts.get(origKey).displayName + ") ซึ่งมีเฉพาะตัวอักษรที่ใช้อยู่ในเอกสาร ถ้าพิมพ์ตัวที่ไม่มี ระบบจะใช้ "
             + fontLabelFor(fallbackKey) + " แทนอัตโนมัติ";
         }
@@ -2493,7 +2519,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       updatePreview();
       if(fontHintEl){
         const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
-        fontHintEl.textContent = (notes.length ? notes.join(" · ") + " — " : "")
+        fontHintEl.textContent = nearPrefix + (notes.length ? notes.join(" · ") + " — " : "")
           + (info.name ? "ฟอนต์ในเอกสารคือ " + info.name + " — เลือก " : "เลือก ")
           + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
       }
@@ -2501,7 +2527,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
   if(localFontBtn){
     localFontBtn.addEventListener("click", async ()=>{
-      const item = activeItem;
+      const target = detectTarget;
       localFontBtn.disabled = true;
       try{
         await loadLocalFontList(); // shows the browser's permission prompt
@@ -2512,7 +2538,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         return;
       }
       localFontBtn.disabled = false;
-      if(item && activeItem === item) tryDetectOriginalFont(item);
+      if(!target) return;
+      if(target.insert){ if(insertPos && insertPos === target.pos) tryDetectOriginalFont(target.item, { insert: true }); }
+      else if(activeItem === target.item) tryDetectOriginalFont(target.item);
     });
   }
 
@@ -2520,11 +2548,52 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // otherwise the closest built-in one (standard fonts are Latin-only and a
   // document's own embedded font is usually a subset) — an edit must never
   // end up with missing/blank glyphs.
+  // Fonts at the same point size can look very different in size (Angsana
+  // New or TH Sarabun New next to Sarabun, say). When an edit has to fall
+  // back from the document's own font to a built-in one, scale the size so
+  // the letters stand as tall as the original's: compare the height of a
+  // flat letter (a Thai consonant like ก, or Latin x) in both fonts.
+  const REF_CHARS_THAI = "กนมบอรวงคสจตา", REF_CHARS_LATIN = "xaeonmursvwz";
+  function fontkitOf(pdfFont){ const f = pdfFont && pdfFont.embedder && pdfFont.embedder.font; return f && typeof f.glyphForCodePoint === "function" ? f : null; }
+  function glyphTop(fk, cp, extra){
+    try{
+      let id = fk._cmapProcessor ? fk._cmapProcessor.lookup(cp) : 0;
+      if(!id && extra && extra.has(cp)) id = extra.get(cp);
+      if(!id) return 0;
+      const g = fk.getGlyph(id);
+      const bb = g && g.bbox;
+      return bb && bb.maxY > 0 ? bb.maxY / fk.unitsPerEm : 0;
+    }catch(e){ return 0; }
+  }
+  async function sizeScaleBetween(entry, fallbackFont, text){
+    try{
+      if(!entry || !fallbackFont) return 1;
+      const bytes = await ensureExtraFontBytes(entry);
+      if(!entry.fk) entry.fk = fontkit.create(bytes);
+      const thai = THAI_CHAR_RE.test(text || "") || !/[a-z]/i.test(text || "");
+      const fbFk = fontkitOf(fallbackFont);
+      const fbAfm = !fbFk && fallbackFont.embedder ? fallbackFont.embedder.font : null;
+      for(const ch of (thai ? REF_CHARS_THAI : REF_CHARS_LATIN)){
+        const cp = ch.codePointAt(0);
+        const hOrig = glyphTop(entry.fk, cp, entry.cmapExtra);
+        const hFb = fbFk ? glyphTop(fbFk, cp, null) : (fbAfm && /[a-z]/.test(ch) ? (fbAfm.XHeight || 0) / 1000 : 0);
+        if(hOrig && hFb) return Math.min(1.6, Math.max(0.55, hOrig / hFb));
+      }
+    }catch(e){}
+    return 1;
+  }
+
   async function fontForText(baseKey, wantBold, text){
     let key = resolveFontKey(baseKey || "sarabun", wantBold);
-    let font = null, warning = null;
+    let font = null, warning = null, sizeScale = 1;
     try{ font = await getEmbeddedFont(key); }catch(e){ font = null; }
     if(font && (isStdFontKey(key) || isExtraFontKey(key)) && !fontFullySupportsText(font, text)) font = null;
+    // bold asked for a detected font that has no bold version: resolveFontKey
+    // already switched to a built-in bold — still match the letter height
+    if(font && isExtraFontKey(baseKey) && !isExtraFontKey(key)){
+      const sc = await sizeScaleBetween(extraFonts.get(baseKey), font, text);
+      if(Math.abs(sc - 1) > 0.03) sizeScale = sc;
+    }
     if(!font){
       const entry = extraFonts.get(baseKey) || extraFonts.get(key);
       let fb = entry ? (entry.fallbackKey || "sarabun") : "sarabun";
@@ -2538,8 +2607,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       warning = entry
         ? "ฟอนต์ " + entry.displayName + " ไม่มีตัวอักษรบางตัวในข้อความนี้ ใช้ " + fontLabelFor(fb) + " แทน"
         : "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
+      if(entry){
+        const sc = await sizeScaleBetween(entry, font, text);
+        if(Math.abs(sc - 1) > 0.03){ sizeScale = sc; warning += " และปรับขนาดให้ตัวอักษรสูงเท่าต้นฉบับ"; }
+      }
     }
-    return { font, warning, key };
+    return { font, warning, key, sizeScale };
   }
 
   // Resolve which pdf-lib font object to draw the replacement text with,
@@ -2549,8 +2622,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const wantBold = !!(boldCheckbox && boldCheckbox.checked);
     lastFontKey = baseKey;
     lastBold = wantBold;
-    const { font, warning } = await fontForText(baseKey, wantBold, newText);
-    return { font, warning };
+    const { font, warning, sizeScale } = await fontForText(baseKey, wantBold, newText);
+    return { font, warning, sizeScale: sizeScale || 1 };
   }
 
   function hexToRgb01(hex){
@@ -2921,6 +2994,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(underlineCheckbox) underlineCheckbox.checked = lastUnderline;
     setAlignUI(lastAlign);
     colorInput.value = lastInsertColor;
+    const near = nearestTextItem(x, yBaseline);
+    if(near){
+      const t = near.transform;
+      const nearSize = Math.hypot(t[2], t[3]);
+      if(nearSize > 0) fontsizeInput.value = Math.round(nearSize * 10) / 10;
+      try{ colorInput.value = rgbToHex(sampleInkColor(near, sampleBgColor(t[4], t[5], nearSize))); }catch(e){}
+    }
     popover.classList.remove("qe-sidepanel-empty");
     popover.hidden = false;
     positionPopoverNear(x, yBaseline);
@@ -2928,6 +3008,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     revealDockedEditor();
     textarea.focus();
     updatePreview();
+    if(near) tryDetectOriginalFont(near, { insert: true }); // best-effort, non-blocking
   }
 
   function openPopover(item, div){
@@ -3084,6 +3165,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     pageOriginY = (viewport.viewBox && viewport.viewBox[1]) || 0;
     currentViewport = viewport; currentPageRotation = page.rotate || 0;
     const textContent = await page.getTextContent();
+    currentTextItems = textContent.items;
 
     textLayerEl.innerHTML = "";
     textLayerEl.style.width = canvas.width + "px";
@@ -3833,16 +3915,17 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const { font, warning } = await resolveEditFont(newText);
+      const { font, warning, sizeScale } = await resolveEditFont(newText);
+      const drawSize = size * sizeScale;
       const { r: tr, g: tg, b: tb } = hexToRgb01(lastInsertColor);
-      const textWidth = measureTextWidth(font, newText, size);
+      const textWidth = measureTextWidth(font, newText, drawSize);
       // computeAlignedX may shift the glyph's actual left edge away from the
       // clicked anchor (center/right align) — insertedMeta must be keyed by
       // that ACTUAL drawn position, since that's what pdf.js will report as
       // this item's transform[4] on the next render, and hit-testing/drag
       // both look items up by that reported position, not the click point.
       const drawX = computeAlignedX(pos.x, align, textWidth, null);
-      drawStyledText(page, newText, { x: drawX, y: pos.yBaseline, size, font, color: rgb(tr, tg, tb), italic, underline });
+      drawStyledText(page, newText, { x: drawX, y: pos.yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
       workingBytes = await workingDoc.save();
       insertedMeta.set(originKey(drawX, pos.yBaseline), { text: newText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: lastInsertColor });
       await renderCurrentPage();
@@ -3934,7 +4017,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           color: rgb(fill.r, fill.g, fill.b),
         });
       }
-      const { font } = await fontForText(meta.fontKey, meta.bold, meta.text);
+      const { font, sizeScale: dragScale } = await fontForText(meta.fontKey, meta.bold, meta.text);
       const { r: tr, g: tg, b: tb } = hexToRgb01(meta.color);
       // A drag translates the already-rendered glyph directly by the mouse
       // delta (newX/newY is that glyph's new left edge/baseline) — it does
@@ -3943,7 +4026,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // baked into the glyph's position, so dragging always draws left-
       // anchored at the literal drop point, same as before this feature;
       // only italic/underline styling is new here.
-      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size, font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline });
+      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size * (dragScale || 1), font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline });
       workingBytes = await workingDoc.save();
       insertedMeta.set(originKey(newX, newY), meta);
       await renderCurrentPage();
@@ -4081,15 +4164,16 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let fontWarning = null;
       let drawX = x;
       if(newText.trim() !== ""){
-        const { font, warning } = await resolveEditFont(newText);
+        const { font, warning, sizeScale } = await resolveEditFont(newText);
+        const drawSize = size * sizeScale;
         fontWarning = warning;
         const { r: tr, g: tg, b: tb } = hexToRgb01(colorInput.value);
         // Align within the ORIGINAL text item's own box span (its left edge
         // to left+width) — same idea as aligning text inside a fixed text
         // box, using the box this text already occupied on the page.
-        const textWidth = measureTextWidth(font, newText, size);
+        const textWidth = measureTextWidth(font, newText, drawSize);
         drawX = computeAlignedX(x, align, textWidth, width);
-        drawStyledText(page, newText, { x: drawX, y: yBaseline, size, font, color: rgb(tr, tg, tb), italic, underline });
+        drawStyledText(page, newText, { x: drawX, y: yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
       }
       // Keep drag tracking in sync: this edit reuses the same origin, so a
       // box that was already draggable (came from "+ เพิ่มข้อความ", or a
