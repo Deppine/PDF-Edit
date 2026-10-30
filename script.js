@@ -2140,11 +2140,14 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const fontHintEl = document.getElementById("quickedit-font-hint");
   const localFontBtn = document.getElementById("quickedit-localfont-btn");
 
+  const LAYOUT_CHARS = new Set([9, 10, 13]); // tab / line breaks are layout, not glyphs
   function fontFullySupportsText(font, text){
     try{
       const set = new Set(font.getCharacterSet());
       for(const ch of text){
-        if(!set.has(ch.codePointAt(0))) return false;
+        const cp = ch.codePointAt(0);
+        if(LAYOUT_CHARS.has(cp)) continue;
+        if(!set.has(cp)) return false;
       }
       return true;
     }catch(e){ return false; }
@@ -2158,6 +2161,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   function charSetCovers(set, text){
     if(!set) return false;
     for(const ch of cleanExtractedText(text)){
+      if(LAYOUT_CHARS.has(ch.codePointAt(0))) continue;
       if(!set.has(ch.codePointAt(0))) return false;
     }
     return true;
@@ -2626,6 +2630,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       if(entry){
         const sc = await sizeScaleBetween(entry, font, text);
         if(Math.abs(sc - 1) > 0.03){ sizeScale = sc; warning += " และปรับขนาดให้ตัวอักษรสูงเท่าต้นฉบับ"; }
+        // A subset of the very font we fall back to (e.g. text this app
+        // inserted earlier in Sarabun, now re-edited) is not a real swap —
+        // the letters look the same, so don't alarm the user.
+        const famOf = n => String(n || "").toLowerCase().replace(/^[a-z]{6}\+/, "").replace(/[-_ ]?(regular|bold|italic|oblique|medium|light)+$/g, "").replace(/[^a-z0-9]/g, "");
+        if(famOf(entry.displayName) && famOf(entry.displayName) === famOf(fontLabelFor(fb)).slice(0, famOf(entry.displayName).length) && Math.abs(sizeScale - 1) <= 0.03) warning = null;
       }
     }
     return { font, warning, key, sizeScale };
@@ -2638,8 +2647,25 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const wantBold = !!(boldCheckbox && boldCheckbox.checked);
     lastFontKey = baseKey;
     lastBold = wantBold;
-    const { font, warning, sizeScale } = await fontForText(baseKey, wantBold, newText);
-    return { font, warning, sizeScale: sizeScale || 1 };
+    const res = await fontForText(baseKey, wantBold, newText);
+    let warning = res.warning, text = newText;
+    try{
+      const set = new Set(res.font.getCharacterSet());
+      const missing = [];
+      text = Array.from(newText).filter(ch=>{
+        const cp = ch.codePointAt(0);
+        if(LAYOUT_CHARS.has(cp) || set.has(cp)) return true;
+        if(missing.indexOf(ch) === -1) missing.push(ch);
+        return false;
+      }).join("");
+      if(missing.length){
+        // tidy the gap a dropped symbol leaves behind ("✓ ok" -> "ok")
+        text = text.replace(/[ \t]{2,}/g, " ").replace(/^[ \t]+|[ \t]+$/gm, "");
+        const msg = "ตัวอักษร " + missing.join(" ") + " ไม่มีในฟอนต์ จึงไม่ได้ใส่ (เครื่องหมาย ✓ ✗ ☐ ใช้โหมด + เพิ่มสัญลักษณ์ แทน)";
+        warning = warning ? warning + " · " + msg : msg;
+      }
+    }catch(e){ text = newText; }
+    return { font: res.font, warning, sizeScale: res.sizeScale || 1, text };
   }
 
   function hexToRgb01(hex){
@@ -3571,6 +3597,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       stampSymbolAt(xPdf, yPdf);
     } else {
       openInsertPopover(xPdf, yPdf, e);
+      if(insertPos && currentPageRotation % 360){
+        const [rx, ry] = canvasPxToRaw(px, py);
+        insertPos.raw = { x: rx, y: ry, rot: ((currentPageRotation % 360) + 360) % 360 };
+      }
     }
   });
 
@@ -3597,6 +3627,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   //   anchor IS the point the user clicked/dropped the text at, and align
   //   decides what that point means relative to the text — its left edge,
   //   center, or right edge.
+  // Direction of a pdf.js text item in raw page space, in degrees CCW
+  // (0 for ordinary horizontal text). Snapped to the nearest degree so tiny
+  // float noise doesn't add a needless rotation operator.
+  function itemAngleDeg(item){
+    const tx = item && item.transform; if(!tx) return 0;
+    const a = Math.round(Math.atan2(tx[1], tx[0]) * 180 / Math.PI);
+    return ((a % 360) + 360) % 360;
+  }
+  // Screen (canvas-pixel) point/delta -> raw PDF point, honoring /Rotate.
+  function canvasPxToRaw(px, py){
+    if(currentViewport && currentViewport.convertToPdfPoint) return currentViewport.convertToPdfPoint(px, py);
+    return [px / pageScale + pageOriginX, (canvasEl.height - py) / pageScale + pageOriginY];
+  }
   function computeAlignedX(anchorX, align, textWidth, refWidth){
     if(refWidth == null){
       if(align === "center") return anchorX - textWidth/2;
@@ -3628,7 +3671,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const ITALIC_SKEW_DEGREES = 12;
   function drawStyledText(page, text, opts){
     const width = measureTextWidth(opts.font, text, opts.size);
+    // opts.rotate (degrees, counter-clockwise in raw page space) keeps text
+    // upright on pages that carry their own /Rotate, and keeps an edited
+    // run in the same direction as the original rotated text.
+    const rot = opts.rotate || 0;
     const drawOpts = { x: opts.x, y: opts.y, size: opts.size, font: opts.font, color: opts.color };
+    if(rot) drawOpts.rotate = degrees(rot);
     if(opts.italic) drawOpts.ySkew = degrees(ITALIC_SKEW_DEGREES);
     page.drawText(text, drawOpts);
     if(opts.underline){
@@ -3638,11 +3686,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // flush under slanted text instead of sitting at a fixed horizontal
       // offset that only lines up with upright text.
       const skewPx = opts.italic ? Math.tan(ITALIC_SKEW_DEGREES * Math.PI / 180) * offset : 0;
-      page.drawLine({
-        start: { x: opts.x + skewPx, y: opts.y - offset },
-        end: { x: opts.x + skewPx + width, y: opts.y - offset },
-        thickness, color: opts.color,
-      });
+      const c = Math.cos(rot * Math.PI / 180), sn = Math.sin(rot * Math.PI / 180);
+      const at = (u, v)=>({ x: opts.x + u*c - v*sn, y: opts.y + u*sn + v*c });
+      page.drawLine({ start: at(skewPx, -offset), end: at(skewPx + width, -offset), thickness, color: opts.color });
     }
     return width;
   }
@@ -4000,19 +4046,29 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const { font, warning, sizeScale } = await resolveEditFont(newText);
+      const { font, warning, sizeScale, text: drawText } = await resolveEditFont(newText);
+      if(!drawText.trim()) throw new Error(warning || "ไม่มีตัวอักษรที่ฟอนต์วาดได้");
       const drawSize = size * sizeScale;
       const { r: tr, g: tg, b: tb } = hexToRgb01(lastInsertColor);
-      const textWidth = measureTextWidth(font, newText, drawSize);
+      const textWidth = measureTextWidth(font, drawText, drawSize);
       // computeAlignedX may shift the glyph's actual left edge away from the
       // clicked anchor (center/right align) — insertedMeta must be keyed by
       // that ACTUAL drawn position, since that's what pdf.js will report as
       // this item's transform[4] on the next render, and hit-testing/drag
       // both look items up by that reported position, not the click point.
-      const drawX = computeAlignedX(pos.x, align, textWidth, null);
-      drawStyledText(page, newText, { x: drawX, y: pos.yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
+      let drawX = computeAlignedX(pos.x, align, textWidth, null), drawY = pos.yBaseline, drawRot = 0;
+      if(pos.raw){
+        // Rotated page: anchor at the raw point under the click and turn the
+        // run by the page's /Rotate so it reads upright on screen. The align
+        // shift moves along the text's own direction.
+        drawRot = pos.raw.rot;
+        const shift = computeAlignedX(0, align, textWidth, null);
+        const c = Math.cos(drawRot * Math.PI / 180), sn = Math.sin(drawRot * Math.PI / 180);
+        drawX = pos.raw.x + shift * c; drawY = pos.raw.y + shift * sn;
+      }
+      drawStyledText(page, drawText, { x: drawX, y: drawY, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline, rotate: drawRot });
       workingBytes = await workingDoc.save();
-      insertedMeta.set(originKey(drawX, pos.yBaseline), { text: newText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: lastInsertColor });
+      insertedMeta.set(originKey(drawX, drawY), { text: drawText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: lastInsertColor });
       await renderCurrentPage();
       setStatus(status, warning ? ("เพิ่มข้อความแล้ว (" + warning + ")") : "เพิ่มข้อความแล้ว", warning ? "warn" : "ok");
     }catch(e){
@@ -4065,12 +4121,14 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         if(!dragging) return; // plain click — let the normal click handler run
         suppressNextClick = true;
         const dxCss = ev.clientX - startX, dyCss = ev.clientY - startY;
-        const dxPdf = (dxCss * scaleX) / pageScale;
-        const dyPdf = -(dyCss * scaleY) / pageScale; // screen Y grows down, PDF Y grows up
-        const pageWidthPdf = canvasEl.width / pageScale, pageHeightPdf = canvasEl.height / pageScale;
+        // Map the screen delta into raw page space through the viewport, so
+        // a drag on a page with /Rotate moves the text the way the mouse went.
+        const [ax, ay] = canvasPxToRaw(0, 0), [bx, by] = canvasPxToRaw(dxCss * scaleX, dyCss * scaleY);
+        const dxPdf = bx - ax, dyPdf = by - ay;
+        const vb = (currentViewport && currentViewport.viewBox) || [pageOriginX, pageOriginY, pageOriginX + canvasEl.width / pageScale, pageOriginY + canvasEl.height / pageScale];
         const oldX = item.transform[4], oldY = item.transform[5];
-        const newX = Math.max(pageOriginX, Math.min(pageOriginX + pageWidthPdf - 2, oldX + dxPdf));
-        const newY = Math.max(pageOriginY, Math.min(pageOriginY + pageHeightPdf - 2, oldY + dyPdf));
+        const newX = Math.max(vb[0], Math.min(vb[2] - 2, oldX + dxPdf));
+        const newY = Math.max(vb[1], Math.min(vb[3] - 2, oldY + dyPdf));
         moveInsertedText(key, item, newX, newY);
       }
       div.addEventListener("pointermove", onMove);
@@ -4120,7 +4178,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // baked into the glyph's position, so dragging always draws left-
       // anchored at the literal drop point, same as before this feature;
       // only italic/underline styling is new here.
-      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size * (dragScale || 1), font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline });
+      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size * (dragScale || 1), font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline, rotate: itemAngleDeg(item) });
       workingBytes = await workingDoc.save();
       insertedMeta.set(originKey(newX, newY), meta);
       await renderCurrentPage();
@@ -4258,16 +4316,24 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let fontWarning = null;
       let drawX = x;
       if(newText.trim() !== ""){
-        const { font, warning, sizeScale } = await resolveEditFont(newText);
+        const { font, warning, sizeScale, text: drawText } = await resolveEditFont(newText);
         const drawSize = size * sizeScale;
         fontWarning = warning;
         const { r: tr, g: tg, b: tb } = hexToRgb01(colorInput.value);
         // Align within the ORIGINAL text item's own box span (its left edge
         // to left+width) — same idea as aligning text inside a fixed text
         // box, using the box this text already occupied on the page.
-        const textWidth = measureTextWidth(font, newText, drawSize);
-        drawX = computeAlignedX(x, align, textWidth, width);
-        drawStyledText(page, newText, { x: drawX, y: yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
+        const textWidth = measureTextWidth(font, drawText, drawSize);
+        const editRot = itemAngleDeg(item);
+        if(editRot){
+          // rotated run: keep its direction; align shift goes along it
+          const shift = computeAlignedX(0, align, textWidth, width);
+          drawX = x + shift * Math.cos(editRot * Math.PI / 180);
+          drawStyledText(page, drawText, { x: drawX, y: yBaseline + shift * Math.sin(editRot * Math.PI / 180), size: drawSize, font, color: rgb(tr, tg, tb), italic, underline, rotate: editRot });
+        }else{
+          drawX = computeAlignedX(x, align, textWidth, width);
+          drawStyledText(page, drawText, { x: drawX, y: yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
+        }
       }
       // Keep drag tracking in sync: this edit reuses the same origin, so a
       // box that was already draggable (came from "+ เพิ่มข้อความ", or a

@@ -984,3 +984,10 @@ nav.tabs-groups{gap:16px;}
 .qe-textlayer span::selection{background:transparent; color:transparent;}
 /* while dragging, show the text being moved so it's clear what goes where */
 .qe-textlayer span.qe-box.qe-box-dragging{color:rgba(27,29,35,.55); opacity:1; background:rgba(109,74,255,.10);}
+/* the page canvas can be wider than the space beside the edit card (laptop
+   screens): center it with auto margins instead of justify-content:center,
+   which pushed the page's left edge out of reach of the scrollbar */
+.qe-workspace .qe-stage-wrap{justify-content:flex-start;}
+.qe-workspace .qe-stage{margin:0 auto; flex-shrink:0;}
+.qe-workspace{grid-template-columns:minmax(0,1fr) 310px;}
+.qe-workspace .qe-stage-wrap{padding:20px;}
