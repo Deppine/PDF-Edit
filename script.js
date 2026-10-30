@@ -2056,7 +2056,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         // no bold version of this exact font: a built-in bold beats silently ignoring the checkbox
         return resolveFontKey(e.fallbackKey || "sarabun", true);
       }
-      if(e.bold && e.regularKey && extraFonts.has(e.regularKey)) return e.regularKey;
+      if(e.bold){
+        if(e.regularKey && extraFonts.has(e.regularKey)) return e.regularKey;
+        // the document only has this font in bold: a regular built-in beats ignoring the checkbox
+        return resolveFontKey(e.fallbackKey || "sarabun", false);
+      }
       return baseKey;
     }
     if(!wantBold) return baseKey;
@@ -2600,8 +2604,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     // bold asked for a detected font that has no bold version: resolveFontKey
     // already switched to a built-in bold — still match the letter height
     if(font && isExtraFontKey(baseKey) && !isExtraFontKey(key)){
-      const sc = await sizeScaleBetween(extraFonts.get(baseKey), font, text);
+      const be = extraFonts.get(baseKey);
+      const sc = await sizeScaleBetween(be, font, text);
       if(Math.abs(sc - 1) > 0.03) sizeScale = sc;
+      warning = "ฟอนต์ " + be.displayName + " ในเอกสารมีแต่แบบ" + (wantBold ? "ตัวปกติ" : "ตัวหนา")
+        + " จึงใช้ " + fontLabelFor(be.fallbackKey || "sarabun") + (wantBold ? " ตัวหนา" : " ตัวปกติ") + " แทน";
     }
     if(!font){
       const entry = extraFonts.get(baseKey) || extraFonts.get(key);
@@ -2892,6 +2899,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }else if(pvEntry && wantBoldPv && !pvEntry.bold && !(pvEntry.boldKey && extraFonts.has(pvEntry.boldKey))){
       const fb = pvEntry.fallbackKey || "sarabun";
       previewScale = previewScaleFor(previewKey, fb, true, textarea.value);
+      previewKey = fb;
+    }else if(pvEntry && !wantBoldPv && pvEntry.bold && !(pvEntry.regularKey && extraFonts.has(pvEntry.regularKey))){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, false, textarea.value);
       previewKey = fb;
     }
     const sizePx = Math.max(0.5, size * previewScale * pageScale);
