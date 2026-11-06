@@ -7713,3 +7713,758 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     textEl.focus();
   };
 })();
+
+/* ================= REDACT (ถมดำข้อมูลส่วนตัว) =================
+   Finds personal data (PDPA) in PDFs — mostly CVs — lets the user review it,
+   then produces a copy where that data is really gone, not just covered:
+   every page that carries a redaction box is re-rendered to an image with
+   the boxes burned in (so no text, vector or image data survives under a
+   box), and an invisible, searchable text layer is put back for only the
+   characters that lie outside every box. Pages without boxes are copied
+   untouched. Annotations (links incl. mailto:), document info and XMP are
+   dropped because they can carry the same personal data.
+   Everything runs locally in the browser. */
+(function(){
+  const drop = document.getElementById("redact-drop");
+  if(!drop) return;
+  const $ = id => document.getElementById(id);
+  const input = $("redact-input"), body = $("redact-body"), filesBar = $("redact-files");
+  const prevBtn = $("redact-prev"), nextBtn = $("redact-next"), pageInfo = $("redact-pageinfo");
+  const stage = $("redact-stage"), canvas = $("redact-canvas"), overlay = $("redact-overlay");
+  const catsBox = $("redact-cats"), namesInput = $("redact-names"), suggestBtn = $("redact-name-suggest");
+  const styleSel = $("redact-style"), hitsList = $("redact-hits"), hitTotal = $("redact-hit-total");
+  const runBtn = $("redact-run"), progress = $("redact-progress"), status = $("redact-status");
+  const result = $("redact-result"), downloadBtn = $("redact-download");
+  const filenameInput = $("redact-filename-input"), filenameExt = $("redact-filename-ext");
+
+  const CAT_LABEL = {
+    idcard: "เลขบัตร/พาสปอร์ต", phone: "เบอร์โทร", email: "อีเมล", social: "โซเชียล",
+    address: "ที่อยู่", birth: "วันเกิด/อายุ", sensitive: "ข้อมูลอ่อนไหว", photo: "รูปถ่าย",
+    name: "ชื่อ", manual: "เพิ่มเอง",
+  };
+  const PREF_KEY = "lyra.redact.prefs";
+  const RENDER_DPI = 200;            // resolution of a flattened (redacted) page
+  const MAX_SIDE = 9000, MAX_AREA = 40e6;
+
+  let files = [];      // [{ name, size, buffer, pjs, numPages, pages:[], boxes:[], analyzed, analyzing, suggestion }]
+  let cur = -1, curPage = 1, seq = 0, boxSeq = 0;
+  let outBlob = null, outBase = "", outExt = ".pdf";
+  let renderTask = null, viewport = null;
+
+  /* ---------- preferences (per viewer; storage may be unavailable) ---------- */
+  function loadPrefs(){
+    try{
+      const p = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
+      if(p.cats) catsBox.querySelectorAll("input[data-cat]").forEach(c=>{ if(c.dataset.cat in p.cats) c.checked = !!p.cats[c.dataset.cat]; });
+      if(p.style) styleSel.value = p.style;
+    }catch(e){}
+  }
+  function savePrefs(){
+    try{
+      const cats = {};
+      catsBox.querySelectorAll("input[data-cat]").forEach(c=> cats[c.dataset.cat] = c.checked);
+      localStorage.setItem(PREF_KEY, JSON.stringify({ cats, style: styleSel.value }));
+    }catch(e){}
+  }
+  loadPrefs();
+  function catOn(cat){
+    if(cat === "manual") return true;
+    const c = catsBox.querySelector(`input[data-cat="${cat}"]`);
+    return !c || c.checked;
+  }
+  const effective = b => b.on && catOn(b.cat);
+
+  /* ---------- text model ----------
+     A page's text becomes one string plus, per character, the "segment" it
+     came from and its index inside that segment. A segment knows how to turn
+     a character range into a rectangle in raw PDF space, whether it came
+     from the PDF's own text (pdf.js item) or from OCR (a word bbox). */
+  const measureCtx = document.createElement("canvas").getContext("2d");
+  measureCtx.font = "100px sans-serif";
+  const COMBINING = /[ัิ-ฺ็-๎̀-ͯ]/;
+  function charFractions(str, family, expected){
+    // cumulative advance of each char boundary, 0..1. Thai combining marks
+    // sit on the previous letter and take no width. When the PDF's own font
+    // is loaded (pdf.js registers it under the item's fontName) and its total
+    // width agrees with what the PDF says, measure with it for exact edges;
+    // otherwise a generic font is close enough with the padding added later.
+    const chars = Array.from(str);
+    measureCtx.font = "100px sans-serif";
+    if(family && expected > 0){
+      try{
+        measureCtx.font = `100px "${family}", sans-serif`;
+        const total = chars.reduce((a, ch)=> a + (COMBINING.test(ch) ? 0 : measureCtx.measureText(ch).width), 0) / 100;
+        if(!(total > 0 && Math.abs(total / expected - 1) < 0.12)) measureCtx.font = "100px sans-serif";
+      }catch(e){ measureCtx.font = "100px sans-serif"; }
+    }
+    let w = chars.map(ch => COMBINING.test(ch) ? 0 : Math.max(1, measureCtx.measureText(ch).width));
+    if(!w.some(v => v > 0)) w = chars.map(()=> 1); // a lone mark (OCR gives these) still has a width
+    const total = w.reduce((a, b)=> a + b, 0) || 1;
+    const out = [0]; let acc = 0;
+    w.forEach(v=>{ acc += v; out.push(acc / total); });
+    return { chars, cum: out };
+  }
+  function itemSegment(item){
+    const tx = item.transform;
+    const fs = Math.hypot(tx[2], tx[3]) || Math.hypot(tx[0], tx[1]) || 10;
+    const len = Math.hypot(tx[0], tx[1]) || 1;
+    const ux = tx[0] / len, uy = tx[1] / len;          // text direction
+    const vx = -uy, vy = ux;                             // "up"
+    const width = item.width || fs * Array.from(item.str).length * 0.5;
+    const { chars, cum } = charFractions(item.str, item.fontName, width / fs);
+    return {
+      str: chars.join(""), chars, fs,
+      rect(a, b){ // chars [a, b)
+        const s = cum[a] * width, e = cum[b] * width;
+        const asc = fs * 1.02, desc = fs * 0.32, pad = Math.max(1, fs * 0.14);
+        const pts = [[s - pad, -desc], [e + pad, -desc], [e + pad, asc], [s - pad, asc]]
+          .map(([u, v])=> [tx[4] + u*ux + v*vx, tx[5] + u*uy + v*vy]);
+        return bboxOf(pts);
+      },
+    };
+  }
+  function ocrSegment(word, vp){
+    const { chars, cum } = charFractions(word.text);
+    const b = word.bbox;
+    return {
+      str: chars.join(""), chars, fs: (b.y1 - b.y0) / vp.scale, ocr: true,
+      rect(a, c){
+        // OCR boxes are approximate: pad by a fifth of the word height
+        const pad = Math.max(3, (b.y1 - b.y0) * 0.2);
+        const x0 = b.x0 + (b.x1 - b.x0) * cum[a] - pad, x1 = b.x0 + (b.x1 - b.x0) * cum[c] + pad;
+        const p0 = vp.convertToPdfPoint(x0, b.y0 - pad * 0.6), p1 = vp.convertToPdfPoint(x1, b.y1 + pad * 0.6);
+        return bboxOf([p0, p1]);
+      },
+    };
+  }
+  function bboxOf(pts){
+    const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  function union(r, s){ return r ? [Math.min(r[0], s[0]), Math.min(r[1], s[1]), Math.max(r[2], s[2]), Math.max(r[3], s[3])] : s.slice(); }
+  function overlapRatio(r, box){ // share of r covered by box
+    const w = Math.min(r[2], box[2]) - Math.max(r[0], box[0]);
+    const h = Math.min(r[3], box[3]) - Math.max(r[1], box[1]);
+    if(w <= 0 || h <= 0) return 0;
+    return (w * h) / Math.max(1e-6, (r[2]-r[0]) * (r[3]-r[1]));
+  }
+
+  // Build the page string. Items on one line get a space between them when
+  // there's a visible gap (pdf.js often omits it); a new line gets "\n".
+  function buildText(segments, lineBreakAfter){
+    let text = ""; const map = [];
+    segments.forEach((seg, si)=>{
+      seg.chars.forEach((ch, ci)=>{ text += ch; map.push([si, ci]); });
+      const br = lineBreakAfter[si];
+      if(br === "\n" || br === " "){ text += br; map.push(null); }
+    });
+    return { text, map };
+  }
+  function textSegmentsFromItems(items){
+    const segs = [], breaks = [];
+    const usable = items.filter(it => it.str && it.str.length && it.transform);
+    usable.forEach((it, i)=>{
+      segs.push(itemSegment(it));
+      const nx = usable[i+1];
+      let br = "";
+      if(it.hasEOL || !nx) br = "\n";
+      else{
+        const t = it.transform, n = nx.transform, fs = segs[i].fs;
+        const sameLine = Math.abs(n[5] - t[5]) < fs * 0.5 && Math.abs(n[4] - t[4]) < 2000;
+        const endX = t[4] + (it.width || 0);
+        if(!sameLine) br = "\n";
+        else if(n[4] - endX > fs * 0.18 && !/\s$/.test(it.str) && !/^\s/.test(nx.str)) br = " ";
+      }
+      breaks.push(br);
+    });
+    return { segs, breaks };
+  }
+
+  /* ---------- detectors ---------- */
+  const thaiFlex = src => src.replace(/\u0E33/g, "(?:\u0E33|\u0E4D\u0E32)");
+  function thaiIdValid(d){
+    if(!/^\d{13}$/.test(d) || d[0] === "0") return false;
+    let s = 0; for(let i=0;i<12;i++) s += (+d[i]) * (13 - i);
+    return (11 - (s % 11)) % 10 === +d[12];
+  }
+    // Thai labels also accept common OCR slips (a dropped tone mark or vowel)
+  const L_SENS = ["ศาสนา","Religion","เช(?:ื้|ื|้)?อชาติ","Race","Ethnicity","สัญชาติ","Nationality","สถานภาพสมรส","สถานภาพ","Marital\\s*Status","น(?:้ำ|ำ|้า|้ํา|ํ้า)หนัก","Weight","ส่วนสูง","Height","กรุ๊ปเลือด","หมู่เลือด","Blood\\s*(?:Type|Group)","โรคประจำตัว","Medical\\s*Conditions?","Health"];
+  const L_OTHER = ["วันเกิด","Date\\s*of\\s*Birth","Birth\\s*Date","DOB","อายุ","Age","เพศ","Gender","Sex","ที่อยู่","Address","โทร","Tel","Phone","Mobile","อีเมล","E-?mail","LINE","Facebook","ชื่อ","Name","ทหาร","Military"];
+    // English labels must stand alone ("Age" not inside "Village").
+  const NEXT_LABEL = thaiFlex("\\s*(?<![A-Za-z])(?:" + L_SENS.concat(L_OTHER).join("|") + ")(?![A-Za-z])\\s*[:：]?");
+  function labelled(labels, maxLen, stopAtComma = true){
+    // label, optional colon, then the value (named group v) up to the end of
+    // that field: line end, a wide gap, a separator or the next known label.
+    const end = "(?=\\s{2,}|\\n|$|\\||;|" + (stopAtComma ? ",|" : "") + NEXT_LABEL + ")";
+    return new RegExp(thaiFlex("(?<![A-Za-z])(?:" + labels.join("|")) + ")(?![A-Za-z])\\s*[:：]?\\s*(?<v>[^\\n|]{1," + maxLen + "}?)" + end, "gi");
+  }
+  const ADDR_TOKENS = /(บ้านเลขที่|เลขที่\s*\d|หมู่(ที่|บ้าน)?\s*\d|ม\.\s*\d|ซ\.|ซอย|ถ\.|ถนน|ต\.|ตำบล|แขวง|อ\.|อำเภอ|เขต|จ\.|จังหวัด|กรุงเทพ|กทม|\bSoi\b|\bMoo\b|\bRd\.?\b|\bRoad\b|Sub-?district|\bDistrict\b|\bProvince\b|Bangkok|Tambon|Amphoe)/gi;
+  const POSTCODE = /(?<!\d)[1-9]\d{4}(?!\d)/;
+  const PATTERNS = [
+    { cat: "email", re: /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g },
+    { cat: "idcard", re: /(?<![\d])\d[\s\-]?\d{4}[\s\-]?\d{5}[\s\-]?\d{2}[\s\-]?\d(?![\d])/g, check: m => thaiIdValid(m.replace(/\D/g, "")) },
+    { cat: "idcard", re: /(?:เลข(?:ที่)?(?:บัตร(?:ประชาชน|ประจำตัวประชาชน)?|หนังสือเดินทาง|พาสปอร์ต)|Passport\s*(?:No\.?|Number)?|ID\s*(?:Card\s*)?No\.?)\s*[:：]?\s*(?<v>[A-Z]{0,2}[\d\s\-]{6,17}\d)/gi },
+    { cat: "phone", re: /(?<![\d])(?:\+\s?66|\(?0)[\d\s\-().]{7,15}\d/g, check: m=>{
+        const d = m.replace(/\D/g, "");
+        if(/^66/.test(d)) return d.length === 10 || d.length === 11;
+        return d.length === 9 || d.length === 10;
+      } },
+    { cat: "social", re: /(?<![A-Za-z])(?:LINE\s*ID|LINE|ไลน์|Facebook|FB|IG|Instagram|TikTok|Twitter|LinkedIn)\s*[:：]\s*(?<v>@?[\w.\-\/ก-๙]+(?: [\w.\-ก-๙]+){0,3})/gi },
+    { cat: "social", re: /(?:https?:\/\/)?(?:www\.)?(?:facebook\.com|fb\.com|linkedin\.com|instagram\.com|tiktok\.com|line\.me|twitter\.com|x\.com|github\.com)\/[^\s]+/gi },
+    { cat: "address", re: labelled(["ที่อยู่(?:ปัจจุบัน|ตามทะเบียนบ้าน|ที่ติดต่อได้|ที่สามารถติดต่อได้)?","(?:Current\\s*|Home\\s*|Permanent\\s*)?Address"], 160, false) },
+    { cat: "birth", re: labelled(["วัน\\s*เดือน\\s*ปี\\s*เกิด","วันเกิด","เกิดวันที่","Date\\s*of\\s*Birth","Birth\\s*Date","Birthday","DOB"], 40) },
+    { cat: "birth", re: /(?<![A-Za-z])(?:อายุ|Age)(?![A-Za-z])\s*[:：]?\s*(?<v>\d{1,2}\s*(?:ปี|years?|yrs?\.?)?)/gi },
+    { cat: "sensitive", re: labelled(L_SENS, 40) },
+  ];
+
+  function findHits(text, names){
+    const hits = []; // {cat, start, end}
+    for(const p of PATTERNS){
+      p.re.lastIndex = 0;
+      let m;
+      while((m = p.re.exec(text))){
+        if(!m[0]){ p.re.lastIndex++; continue; }
+        if(p.check && !p.check(m[0])) continue;
+        let start = m.index, end = m.index + m[0].length;
+        if(m.groups && m.groups.v != null){
+          const v = m.groups.v.replace(/\s+$/, "");
+          if(!v.trim()) continue;
+          start = m.index + m[0].lastIndexOf(m.groups.v); end = start + v.length;
+        }
+        hits.push({ cat: p.cat, start, end });
+      }
+    }
+    // address lines without a label: enough address words (a postcode counts double)
+    let pos = 0;
+    text.split("\n").forEach(line=>{
+      const tokens = (line.match(ADDR_TOKENS) || []).length + (POSTCODE.test(line) ? 2 : 0);
+      if(tokens >= 3){
+        const lead = line.length - line.trimStart().length;
+        hits.push({ cat: "address", start: pos + lead, end: pos + line.trimEnd().length });
+      }
+      pos += line.length + 1;
+    });
+    // names the user typed: the full name and each part of 3+ letters
+    const terms = new Set();
+    names.forEach(n=>{
+      const t = n.trim().replace(/\s+/g, " "); if(t.length < 2) return;
+      terms.add(t);
+      t.split(" ").forEach(part=>{ if(Array.from(part).length >= 3) terms.add(part); });
+    });
+    terms.forEach(t=>{
+      const re = new RegExp(thaiFlex(Array.from(t).map(ch => ch === " " ? "\\s*" : ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("")), "gi");
+      let m; while((m = re.exec(text))){ hits.push({ cat: "name", start: m.index, end: m.index + m[0].length }); if(!m[0]) re.lastIndex++; }
+    });
+    return hits;
+  }
+
+  // one hit -> one rectangle per segment it touches
+  function hitRects(hit, pg){
+    const parts = new Map();
+    for(let i = hit.start; i < hit.end; i++){
+      const mp = pg.map[i]; if(!mp) continue;
+      const [si, ci] = mp;
+      const r = parts.get(si);
+      if(r) r[1] = ci + 1; else parts.set(si, [ci, ci + 1]);
+    }
+    const rects = [];
+    parts.forEach(([a, b], si)=> rects.push(pg.segs[si].rect(a, b)));
+    // merge pieces that sit on the same line into one box (OCR gives one
+    // piece per Thai cluster, each a slightly different height)
+    const merged = rects.map(r => r.slice());
+    let changed = true;
+    while(changed){
+      changed = false;
+      outer: for(let i = 0; i < merged.length; i++) for(let j = i + 1; j < merged.length; j++){
+        const a = merged[i], b = merged[j];
+        const vOver = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+        const minH = Math.min(a[3]-a[1], b[3]-b[1]), maxH = Math.max(a[3]-a[1], b[3]-b[1]);
+        const gap = Math.max(a[0], b[0]) - Math.min(a[2], b[2]);
+        if(vOver > minH * 0.4 && gap < maxH * 1.5){ merged[i] = union(a, b); merged.splice(j, 1); changed = true; break outer; }
+      }
+    }
+    return merged;
+  }
+
+  // Images drawn on the page, in raw PDF space (tracks the CTM through the
+  // operator list). Small-to-medium ones are photo candidates; full-page
+  // images (a scan or a background) are not.
+  async function findImages(page){
+    const ops = await page.getOperatorList();
+    const O = pdfjsLib.OPS, out = [];
+    let ctm = [1,0,0,1,0,0]; const stack = [];
+    const mul = (m, n)=> [m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5]];
+    for(let i=0;i<ops.fnArray.length;i++){
+      const fn = ops.fnArray[i], args = ops.argsArray[i];
+      if(fn === O.save) stack.push(ctm);
+      else if(fn === O.restore) ctm = stack.pop() || [1,0,0,1,0,0];
+      else if(fn === O.transform) ctm = mul(ctm, args);
+      else if(fn === O.paintFormXObjectBegin){ stack.push(ctm); if(args && args[0]) ctm = mul(ctm, args[0]); }
+      else if(fn === O.paintFormXObjectEnd) ctm = stack.pop() || [1,0,0,1,0,0];
+      else if(fn === O.paintImageXObject || fn === O.paintJpegXObject || fn === O.paintInlineImageXObject || fn === O.paintImageMaskXObject){
+        const pts = [[0,0],[1,0],[0,1],[1,1]].map(([x, y])=> [ctm[0]*x + ctm[2]*y + ctm[4], ctm[1]*x + ctm[3]*y + ctm[5]]);
+        out.push(bboxOf(pts));
+      }
+    }
+    return out;
+  }
+
+  /* ---------- OCR for scanned pages ---------- */
+  let ocrWorker = null;
+  async function getOcrWorker(){
+    if(ocrWorker) return ocrWorker;
+    if(typeof Tesseract === "undefined") throw new Error("ไม่พบโมดูล OCR");
+    ocrWorker = await Tesseract.createWorker("tha+eng", 1, {
+      workerPath: "vendor/tesseract/worker.min.js", corePath: "vendor/tesseract/tesseract-core-lstm.wasm.js",
+      langPath: "vendor/tessdata/", gzip: true, workerBlobURL: false, logger: ()=>{},
+    });
+    return ocrWorker;
+  }
+  async function ocrPage(page){
+    const vp = page.getViewport({ scale: 300 / 72 });
+    const c = document.createElement("canvas");
+    c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    const w = await getOcrWorker();
+    const { data } = await w.recognize(c, {}, { blocks: true });
+    c.width = c.height = 0;
+    const segs = [], breaks = [];
+    (data.blocks || []).forEach(bl => (bl.paragraphs || []).forEach(pa => (pa.lines || []).forEach(li=>{
+      const words = (li.words || []).filter(wd => (wd.text || "").trim());
+      // Tesseract reports Thai one cluster per "word", but its line text has
+      // the real spaces: walk the line text to learn where words really end.
+      const lt = (li.text || "").replace(/\s+$/, "");
+      let pos = 0, aligned = true;
+      const lh = li.bbox ? (li.bbox.y1 - li.bbox.y0) : 40;
+      words.forEach((wd, k)=>{
+        const t = wd.text.trim();
+        segs.push(ocrSegment({ text: t, bbox: wd.bbox }, vp));
+        let br;
+        if(k === words.length - 1) br = "\n";
+        else{
+          if(aligned){
+            while(pos < lt.length && /\s/.test(lt[pos])) pos++;
+            if(lt.startsWith(t, pos)){ pos += t.length; br = /\s/.test(lt[pos] || "") ? " " : ""; }
+            else aligned = false;
+          }
+          if(!aligned){ const nx = words[k + 1].bbox; br = (nx.x0 - wd.bbox.x1) > lh * 0.3 ? " " : ""; }
+        }
+        breaks.push(br);
+      });
+    })));
+    return { segs, breaks };
+  }
+
+  /* ---------- analysis ---------- */
+  function namesList(){ return namesInput.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean); }
+
+  async function analyzeFile(f){
+    if(f.analyzed || f.analyzing) return;
+    f.analyzing = true;
+    const mySeq = seq;
+    try{
+      let biggest = null;
+      for(let n = 1; n <= f.numPages; n++){
+        if(mySeq !== seq || !f.pjs) return;
+        setStatus(status, `กำลังค้นหาข้อมูลส่วนตัวใน ${f.name} หน้า ${n}/${f.numPages}...`, "loading");
+        const page = await f.pjs.getPage(n);
+        const vp1 = page.getViewport({ scale: 1 });
+        try{
+          const tiny = document.createElement("canvas"), tv = page.getViewport({ scale: 0.25 });
+          tiny.width = Math.ceil(tv.width); tiny.height = Math.ceil(tv.height);
+          await page.render({ canvasContext: tiny.getContext("2d"), viewport: tv }).promise;
+          tiny.width = tiny.height = 0;
+        }catch(e){}
+        const tc = await page.getTextContent();
+        const realText = tc.items.map(i => i.str || "").join("").replace(/\s/g, "");
+        let model, ocr = false;
+        if(realText.length >= 15){
+          model = textSegmentsFromItems(tc.items);
+          // candidate applicant name: the biggest text on page 1
+          if(n === 1) tc.items.forEach(it=>{
+            const s = (it.str || "").trim(), fs = Math.hypot(it.transform[2], it.transform[3]);
+            if(s.length >= 4 && s.length <= 40 && !/[\d@:/]/.test(s) && s.split(/\s+/).length <= 5 && (!biggest || fs > biggest.fs)) biggest = { s, fs };
+          });
+        }else{
+          setStatus(status, `หน้า ${n} เป็นภาพสแกน กำลังอ่านด้วย OCR (อาจใช้เวลาสักครู่)...`, "loading");
+          try{ model = await ocrPage(page); ocr = true; }
+          catch(e){ model = { segs: [], breaks: [] }; }
+        }
+        const { text, map } = buildText(model.segs, model.breaks);
+        const pg = { n, segs: model.segs, text, map, ocr, w: vp1.width, h: vp1.height };
+        f.pages[n - 1] = pg;
+        // hits
+        findHits(text, namesList()).forEach(h => hitRects(h, pg).forEach(r => addBox(f, n, r, h.cat, text.slice(h.start, h.end).replace(/\s+/g, " ").trim())));
+        // photos
+        try{
+          const area = vp1.width * vp1.height;
+          (await findImages(page)).forEach(r=>{
+            const a = (r[2]-r[0]) * (r[3]-r[1]);
+            const ar = (r[2]-r[0]) / Math.max(1e-6, r[3]-r[1]);
+            if(a > area * 0.004 && a < area * 0.35 && ar > 0.4 && ar < 2.5) addBox(f, n, r, "photo", "รูปภาพ");
+          });
+        }catch(e){}
+        page.cleanup();
+        if(f === files[cur] && n === curPage) drawBoxes();
+      }
+      f.suggestion = biggest && biggest.s.replace(/^(?:นางสาว|นาง|นาย|ดร\.|ว่าที่\s*ร\.?\s*ต\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?)\s*/i, "").trim();
+      f.analyzed = true;
+      refreshSide();
+      setStatus(status, `ค้นหาเสร็จแล้ว · ตรวจทานกรอบสีส้มก่อนกดถมดำ`, "ok");
+    }finally{
+      f.analyzing = false;
+      renderFileTabs();
+    }
+  }
+  function addBox(f, page, rect, cat, label){
+    // skip exact/near duplicates of the same category
+    if(f.boxes.some(b => b.page === page && b.cat === cat && (overlapRatio(rect, b.rect) > 0.85 || overlapRatio(b.rect, rect) > 0.85))) return;
+    // a name inside an email/link that is already boxed adds nothing
+    if(cat === "name" && f.boxes.some(b => b.page === page && b.cat !== "name" && overlapRatio(rect, b.rect) > 0.85)) return;
+    f.boxes.push({ id: ++boxSeq, page, rect, cat, label, on: true });
+  }
+  function redetectNames(){
+    files.forEach(f=>{
+      if(!f.analyzed) return;
+      const keepOff = new Set(f.boxes.filter(b => b.cat === "name" && !b.on).map(b => b.label + "@" + b.page));
+      f.boxes = f.boxes.filter(b => b.cat !== "name");
+      f.pages.forEach(pg=>{
+        if(!pg) return;
+        findHits(pg.text, namesList()).filter(h => h.cat === "name").forEach(h=>{
+          const label = pg.text.slice(h.start, h.end);
+          hitRects(h, pg).forEach(r => addBox(f, pg.n, r, "name", label));
+        });
+      });
+      f.boxes.forEach(b=>{ if(b.cat === "name" && keepOff.has(b.label + "@" + b.page)) b.on = false; });
+    });
+    drawBoxes(); refreshSide(); clearResult();
+  }
+
+  /* ---------- file handling ---------- */
+  wireDrop(drop, input, async (list)=>{
+    for(const file of list){
+      const f = { name: file.name.replace(/\.pdf$/i, ""), size: file.size, buffer: await readFileAsArrayBuffer(file), pages: [], boxes: [], analyzed: false };
+      try{
+        f.pjs = await pdfjsLib.getDocument({ data: f.buffer.slice(0) }).promise;
+        f.numPages = f.pjs.numPages;
+        files.push(f);
+      }catch(e){
+        setStatus(status, (e && e.name === "PasswordException") ? `${file.name} ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน` : `อ่านไฟล์ ${file.name} ไม่ได้: ${e && e.message}`, "err");
+      }
+    }
+    input.value = "";
+    if(!files.length) return;
+    body.style.display = "block";
+    clearResult();
+    if(cur < 0) await selectFile(0); else renderFileTabs();
+    for(const f of files) await analyzeFile(f);
+  });
+
+  function renderFileTabs(){
+    filesBar.innerHTML = "";
+    files.forEach((f, i)=>{
+      const n = f.boxes.filter(effective).length;
+      const tab = document.createElement("div");
+      tab.className = "rd-file" + (i === cur ? " active" : "");
+      tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", i === cur ? "true" : "false");
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "rd-file-btn";
+      btn.innerHTML = `<span class="rd-file-name">${escapeHtml(f.name)}.pdf</span><span class="rd-file-meta">${f.analyzed ? n + " จุด" : "กำลังค้นหา..."}</span>`;
+      btn.onclick = ()=> selectFile(i);
+      const rm = document.createElement("button");
+      rm.type = "button"; rm.className = "rd-file-rm"; rm.setAttribute("aria-label", "เอาไฟล์ " + f.name + " ออก"); rm.textContent = "×";
+      rm.onclick = ()=> removeFile(i);
+      tab.append(btn, rm);
+      filesBar.appendChild(tab);
+    });
+  }
+  async function selectFile(i){
+    cur = i; curPage = 1;
+    renderFileTabs(); refreshSide();
+    await renderPage();
+  }
+  function removeFile(i){
+    const f = files[i];
+    if(f && f.pjs){ try{ f.pjs.destroy(); }catch(e){} f.pjs = null; }
+    files.splice(i, 1);
+    clearResult();
+    if(!files.length){ cur = -1; seq++; body.style.display = "none"; setStatus(status, "", ""); refreshSide(); return; }
+    selectFile(Math.min(i, files.length - 1));
+  }
+
+  /* ---------- viewer ---------- */
+  async function renderPage(){
+    const f = files[cur]; if(!f || !f.pjs) return;
+    pageInfo.textContent = `หน้า ${curPage} / ${f.numPages}`;
+    prevBtn.disabled = curPage <= 1; nextBtn.disabled = curPage >= f.numPages;
+    const page = await f.pjs.getPage(curPage);
+    const wrapW = Math.max(320, Math.min(900, stage.parentElement.clientWidth - 24));
+    const base = page.getViewport({ scale: 1 });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    viewport = page.getViewport({ scale: (wrapW / base.width) * dpr });
+    if(renderTask){ try{ renderTask.cancel(); }catch(e){} }
+    canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+    canvas.style.width = (viewport.width / dpr) + "px"; canvas.style.height = (viewport.height / dpr) + "px";
+    stage.style.width = canvas.style.width; stage.style.height = canvas.style.height;
+    renderTask = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+    try{ await renderTask.promise; }catch(e){ if(e && e.name === "RenderingCancelledException") return; }
+    drawBoxes();
+  }
+  function cssRect(rect){
+    const dpr = canvas.width / (parseFloat(canvas.style.width) || canvas.width);
+    const r = viewport.convertToViewportRectangle(rect);
+    const x0 = Math.min(r[0], r[2]) / dpr, y0 = Math.min(r[1], r[3]) / dpr;
+    return { left: x0, top: y0, width: Math.abs(r[2] - r[0]) / dpr, height: Math.abs(r[3] - r[1]) / dpr };
+  }
+  function drawBoxes(){
+    overlay.innerHTML = "";
+    const f = files[cur]; if(!f || !viewport) return;
+    f.boxes.filter(b => b.page === curPage && catOn(b.cat)).forEach(b=>{
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "rd-box" + (b.on ? "" : " off") + (b.cat === "manual" ? " manual" : "");
+      el.dataset.id = b.id;
+      el.setAttribute("aria-pressed", b.on ? "true" : "false");
+      el.title = `${CAT_LABEL[b.cat]}: ${b.label}` + (b.on ? " (คลิกเพื่อไม่ถมดำ)" : " (คลิกเพื่อถมดำ)");
+      el.setAttribute("aria-label", el.title);
+      Object.assign(el.style, Object.fromEntries(Object.entries(cssRect(b.rect)).map(([k, v])=> [k, v + "px"])));
+      el.addEventListener("pointerdown", e => e.stopPropagation());
+      el.onclick = ()=>{ b.on = !b.on; drawBoxes(); refreshSide(); clearResult(); };
+      overlay.appendChild(el);
+    });
+  }
+  prevBtn.onclick = ()=>{ if(curPage > 1){ curPage--; renderPage(); } };
+  nextBtn.onclick = ()=>{ const f = files[cur]; if(f && curPage < f.numPages){ curPage++; renderPage(); } };
+  let resizeT = null;
+  window.addEventListener("resize", ()=>{ clearTimeout(resizeT); resizeT = setTimeout(()=>{ if(cur >= 0 && $("panel-redact").classList.contains("active")) renderPage(); }, 200); });
+
+  // drag on the page to add a box by hand
+  let dragStart = null, ghost = null;
+  overlay.addEventListener("pointerdown", e=>{
+    if(e.button !== 0 || cur < 0) return;
+    e.preventDefault();
+    const r = overlay.getBoundingClientRect();
+    dragStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+    ghost = document.createElement("div"); ghost.className = "rd-ghost";
+    overlay.appendChild(ghost);
+    overlay.setPointerCapture(e.pointerId);
+  });
+  overlay.addEventListener("pointermove", e=>{
+    if(!dragStart) return;
+    const r = overlay.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    Object.assign(ghost.style, { left: Math.min(x, dragStart.x) + "px", top: Math.min(y, dragStart.y) + "px", width: Math.abs(x - dragStart.x) + "px", height: Math.abs(y - dragStart.y) + "px" });
+  });
+  overlay.addEventListener("pointerup", e=>{
+    if(!dragStart) return;
+    const r = overlay.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    const s = dragStart; dragStart = null; if(ghost){ ghost.remove(); ghost = null; }
+    if(Math.abs(x - s.x) < 6 || Math.abs(y - s.y) < 6) return;
+    const dpr = canvas.width / r.width;
+    const p0 = viewport.convertToPdfPoint(Math.min(x, s.x) * dpr, Math.min(y, s.y) * dpr);
+    const p1 = viewport.convertToPdfPoint(Math.max(x, s.x) * dpr, Math.max(y, s.y) * dpr);
+    files[cur].boxes.push({ id: ++boxSeq, page: curPage, rect: bboxOf([p0, p1]), cat: "manual", label: "กรอบที่เพิ่มเอง", on: true });
+    drawBoxes(); refreshSide(); clearResult();
+  });
+
+  /* ---------- side panel ---------- */
+  function refreshSide(){
+    const f = files[cur];
+    const counts = {};
+    (f ? f.boxes : []).forEach(b=>{ if(b.on) counts[b.cat] = (counts[b.cat] || 0) + 1; });
+    catsBox.querySelectorAll("[data-count]").forEach(el => el.textContent = counts[el.dataset.count] || 0);
+    hitsList.innerHTML = "";
+    let total = 0;
+    (f ? f.boxes : []).filter(b => catOn(b.cat)).sort((a, b)=> a.page - b.page || b.rect[3] - a.rect[3]).forEach(b=>{
+      if(b.on) total++;
+      const li = document.createElement("li");
+      const lab = document.createElement("label");
+      const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = b.on;
+      chk.onchange = ()=>{ b.on = chk.checked; drawBoxes(); refreshSide(); clearResult(); };
+      const txt = document.createElement("span");
+      txt.innerHTML = `<b>${CAT_LABEL[b.cat]}</b> ${escapeHtml(b.label.slice(0, 60))}`;
+      const go = document.createElement("button"); go.type = "button"; go.className = "rd-hit-page"; go.textContent = "หน้า " + b.page;
+      go.onclick = ()=>{ if(curPage !== b.page){ curPage = b.page; renderPage(); } };
+      lab.append(chk, txt); li.append(lab, go); hitsList.appendChild(li);
+    });
+    hitTotal.textContent = total;
+    if(f && f.suggestion && !namesInput.value.trim()){
+      suggestBtn.hidden = false;
+      suggestBtn.textContent = `ใช้ชื่อที่พบ: “${f.suggestion}”`;
+    }else suggestBtn.hidden = true;
+    runBtn.disabled = !files.length || files.some(x => !x.analyzed);
+    renderFileTabs();
+  }
+  catsBox.addEventListener("change", ()=>{ savePrefs(); drawBoxes(); refreshSide(); clearResult(); });
+  styleSel.addEventListener("change", ()=>{ savePrefs(); clearResult(); });
+  let nameT = null;
+  namesInput.addEventListener("input", ()=>{ clearTimeout(nameT); nameT = setTimeout(redetectNames, 350); });
+  suggestBtn.onclick = ()=>{ const f = files[cur]; if(f && f.suggestion){ namesInput.value = f.suggestion; redetectNames(); } };
+
+  function clearResult(){ outBlob = null; result.classList.remove("show"); }
+
+  /* ---------- produce the redacted PDF ---------- */
+  function canvasToBytes(c, type, q){
+    return new Promise((res, rej)=> c.toBlob(b => b ? b.arrayBuffer().then(a => res(new Uint8Array(a))) : rej(new Error("สร้างภาพหน้าไม่สำเร็จ")), type, q));
+  }
+  async function redactFile(f, onProgress){
+    const boxes = f.boxes.filter(effective);
+    const byPage = new Map();
+    boxes.forEach(b=>{ if(!byPage.has(b.page)) byPage.set(b.page, []); byPage.get(b.page).push(b.rect); });
+    const out = await PDFDocument.create();
+    out.registerFontkit(fontkit);
+    let src = null, font = null;
+    const style = styleSel.value;
+    for(let n = 1; n <= f.numPages; n++){
+      onProgress(n);
+      const rects = byPage.get(n);
+      if(!rects){
+        if(!src){
+          try{ src = await PDFDocument.load(f.buffer.slice(0)); }
+          catch(e){ src = (await autoDecryptIfNeeded(await PDFDocument.load(f.buffer.slice(0), { ignoreEncryption: true }), f.buffer)).doc; }
+        }
+        const [cp] = await out.copyPages(src, [n - 1]);
+        out.addPage(cp);
+        continue;
+      }
+      // flatten: render, burn the boxes in, place as an image
+      const page = await f.pjs.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      let scale = RENDER_DPI / 72;
+      const fit = Math.min(1, MAX_SIDE / (base.width * scale), MAX_SIDE / (base.height * scale), Math.sqrt(MAX_AREA / (base.width * base.height * scale * scale)));
+      scale *= fit;
+      const vp = page.getViewport({ scale });
+      const c = document.createElement("canvas");
+      c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      rects.forEach(rect=>{
+        const r = vp.convertToViewportRectangle(rect);
+        const x = Math.floor(Math.min(r[0], r[2])), y = Math.floor(Math.min(r[1], r[3]));
+        const w = Math.ceil(Math.abs(r[2] - r[0])) + 1, h = Math.ceil(Math.abs(r[3] - r[1])) + 1;
+        if(style === "label"){
+          ctx.fillStyle = "#4b4f58"; ctx.fillRect(x, y, w, h);
+          const fs = Math.min(h * 0.55, 13 * scale);
+          if(fs >= 6 && w > fs * 3){
+            ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+            ctx.fillStyle = "#ffffff"; ctx.font = `${fs}px "IBM Plex Sans Thai", sans-serif`;
+            ctx.textBaseline = "middle"; ctx.textAlign = "center";
+            ctx.fillText(w > fs * 7 ? "ข้อมูลส่วนบุคคล" : "PDPA", x + w / 2, y + h / 2);
+            ctx.restore();
+          }
+        }else{ ctx.fillStyle = "#000"; ctx.fillRect(x, y, w, h); }
+      });
+      const jpg = await canvasToBytes(c, "image/jpeg", 0.9);
+      c.width = c.height = 0;
+      const img = await out.embedJpg(jpg);
+      const pw = base.width, ph = base.height;
+      const op = out.addPage([pw, ph]);
+      op.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+      // searchable layer: only characters outside every box
+      const pg = f.pages[n - 1];
+      if(pg && pg.segs.length && !pg.ocr){
+        if(!font) font = await out.embedFont(ocrFontBytes(), { subset: true });
+        for(const seg of pg.segs){
+          let run = null;
+          const flush = ()=>{
+            if(!run) return;
+            const text = seg.chars.slice(run[0], run[1]).join("");
+            if(text.trim()){
+              const rr = base.convertToViewportRectangle(seg.rect(run[0], run[1]));
+              const x0 = Math.min(rr[0], rr[2]), x1 = Math.max(rr[0], rr[2]), yb = Math.max(rr[1], rr[3]);
+              const hh = Math.abs(rr[3] - rr[1]);
+              let size = Math.max(1, hh * 0.7);
+              try{
+                const mw = font.widthOfTextAtSize(text, size);
+                if(mw > 0) size = Math.max(1, size * Math.max(0.4, Math.min(2.5, (x1 - x0) / mw)));
+                op.drawText(text, { x: x0, y: ph - yb + hh * 0.24, size, font, opacity: 0 });
+              }catch(e){ /* a glyph the font can't encode — leave it out */ }
+            }
+            run = null;
+          };
+          seg.chars.forEach((ch, ci)=>{
+            const r = seg.rect(ci, ci + 1);
+            const hidden = rects.some(b => overlapRatio(r, b) > 0.25);
+            if(hidden){ flush(); return; }
+            if(run) run[1] = ci + 1; else run = [ci, ci + 1];
+          });
+          flush();
+        }
+      }
+      page.cleanup();
+    }
+    // drop anything that can carry personal data outside the page content
+    out.getPages().forEach(p=>{
+      ["Annots", "Metadata", "PieceInfo", "AA", "Thumb"].forEach(k => p.node.delete(PDFName.of(k)));
+    });
+    out.setTitle(""); out.setAuthor(""); out.setSubject(""); out.setKeywords([]);
+    out.setCreator("Lyra"); out.setProducer("Lyra");
+    const bytes = await out.save({ useObjectStreams: true });
+    return { bytes, boxes: boxes.length, pages: byPage.size };
+  }
+
+  // reopen the result and make sure none of the redacted strings survived
+  async function verify(bytes, f){
+    const norm = s => s.replace(/[\s\-().]+/g, "").toLowerCase();
+    const STRONG = new Set(["idcard", "email", "phone", "social"]);
+    const keptVisible = new Set(f.boxes.filter(b => !effective(b)).map(b => norm(b.label)));
+    const needles = f.boxes.filter(b => effective(b) && STRONG.has(b.cat)).map(b => norm(b.label)).filter(s => Array.from(s).length >= 6 && !keptVisible.has(s));
+    if(!needles.length) return [];
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+    let all = "";
+    try{
+      for(let n = 1; n <= doc.numPages; n++){
+        const tc = await (await doc.getPage(n)).getTextContent();
+        all += norm(tc.items.map(i => i.str || "").join(""));
+      }
+    }finally{ doc.destroy(); }
+    return Array.from(new Set(needles.filter(s => all.includes(s))));
+  }
+
+  runBtn.onclick = async ()=>{
+    if(!files.length) return;
+    runBtn.disabled = true; clearResult();
+    progress.style.display = "block"; progress.value = 0;
+    try{
+      const totalPages = files.reduce((a, f)=> a + f.numPages, 0);
+      let done = 0;
+      const outputs = [], leaks = [];
+      for(const f of files){
+        const res = await redactFile(f, n=>{
+          setStatus(status, `กำลังถมดำ ${f.name} หน้า ${n}/${f.numPages}...`, "loading");
+          progress.value = Math.round(((done + n) / totalPages) * 100);
+        });
+        done += f.numPages;
+        setStatus(status, `กำลังตรวจซ้ำ ${f.name}...`, "loading");
+        const left = await verify(res.bytes, f);
+        if(left.length) leaks.push(`${f.name}: ${left.join(", ")}`);
+        outputs.push({ f, ...res });
+      }
+      if(leaks.length) throw new Error("ตรวจซ้ำแล้วยังพบข้อความที่ควรถูกถมดำ จึงไม่สร้างไฟล์ (" + leaks.join(" · ") + ") กรุณาแจ้งผู้ดูแลระบบ");
+      if(outputs.length === 1){
+        outBlob = new Blob([outputs[0].bytes], { type: "application/pdf" });
+        outExt = ".pdf"; outBase = outputs[0].f.name + "_redacted";
+      }else{
+        const zip = new JSZip();
+        outputs.forEach(o => zip.file(sanitizeFilename(o.f.name) + "_redacted.pdf", o.bytes));
+        outBlob = await zip.generateAsync({ type: "blob" });
+        outExt = ".zip"; outBase = "redacted_" + outputs.length + "_files";
+      }
+      filenameExt.textContent = outExt;
+      setFilenameDefault(filenameInput, outBase);
+      const nBoxes = outputs.reduce((a, o)=> a + o.boxes, 0), nPages = outputs.reduce((a, o)=> a + o.pages, 0);
+      result.querySelector(".stats").innerHTML = `ถมดำ <b>${nBoxes}</b> จุด ใน <b>${nPages}</b> หน้า · ${outputs.length} ไฟล์ · <b>${fmtBytes(outBlob.size)}</b>`;
+      result.classList.add("show");
+      setStatus(status, nBoxes ? "เสร็จแล้ว · ตรวจซ้ำแล้ว ไม่พบข้อความที่ถมดำหลงเหลือในไฟล์ใหม่" : "เสร็จแล้ว · ไม่มีจุดที่เลือกถมดำ ระบบล้างข้อมูลแฝงของไฟล์ให้อย่างเดียว", nBoxes ? "ok" : "warn");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      progress.style.display = "none";
+      runBtn.disabled = !files.length;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outBlob) downloadBlob(outBlob, resolveFilename(filenameInput, outBase, outExt)); };
+})();

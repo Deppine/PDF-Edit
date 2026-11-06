@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261030e" />
+<link rel="stylesheet" href="style.css?v=20261106a" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -95,6 +95,10 @@
         <button data-tab="removepass">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
           <span class="tab-label">ปลดล็อกรหัสผ่าน</span>
+        </button>
+        <button data-tab="redact">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+          <span class="tab-label">ถมดำข้อมูลส่วนตัว</span>
         </button>
       </div>
     </div>
@@ -1358,6 +1362,100 @@
   </section>
 
   <!-- ================= PDF TO JPG ================= -->
+  <section class="panel" id="panel-redact">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+      </div>
+      <h2>ถมดำข้อมูลส่วนตัว</h2>
+    </div>
+    <p class="desc">ปิดข้อมูลส่วนบุคคลใน CV และเอกสารตาม PDPA ระบบหาให้อัตโนมัติ ตรวจทานแล้วกดถมดำ ข้อมูลใต้กล่องจะถูกลบออกจากไฟล์จริง ไม่ใช่แค่ปิดทับ</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="redact-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/><path d="M16 16l-4-4-4 4"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>ได้หลายไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ไฟล์สแกนก็ได้ ระบบจะอ่านด้วย OCR ในเครื่องนี้</div>
+      <input type="file" id="redact-input" accept="application/pdf" multiple />
+    </div>
+    <div id="redact-body" style="display:none;">
+      <div class="rd-files" id="redact-files" role="tablist" aria-label="ไฟล์ที่เลือก"></div>
+      <div class="rd-toolbar">
+        <div class="rd-pager">
+          <button type="button" class="btn secondary small" id="redact-prev" aria-label="หน้าก่อน">‹</button>
+          <span id="redact-pageinfo">หน้า 1 / 1</span>
+          <button type="button" class="btn secondary small" id="redact-next" aria-label="หน้าถัดไป">›</button>
+        </div>
+        <span class="rd-tip">คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง</span>
+      </div>
+      <div class="rd-stage-wrap">
+        <div class="rd-stage" id="redact-stage">
+          <canvas id="redact-canvas"></canvas>
+          <div class="rd-overlay" id="redact-overlay"></div>
+        </div>
+      </div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ข้อมูลที่จะถมดำ</h3>
+        <div class="rd-cats" id="redact-cats">
+<label class="rd-cat"><input type="checkbox" data-cat="idcard" checked /><span class="rd-cat-text"><span class="rd-cat-label">เลขบัตรประชาชน / พาสปอร์ต</span><span class="rd-cat-hint">ตรวจเลข 13 หลักด้วย check digit</span></span><span class="rd-cat-count" data-count="idcard">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="phone" checked /><span class="rd-cat-text"><span class="rd-cat-label">เบอร์โทรศัพท์</span><span class="rd-cat-hint">0x-xxx-xxxx, +66</span></span><span class="rd-cat-count" data-count="phone">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="email" checked /><span class="rd-cat-text"><span class="rd-cat-label">อีเมล</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="email">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="social" checked /><span class="rd-cat-text"><span class="rd-cat-label">LINE / Facebook / ลิงก์โซเชียล</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="social">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="address" checked /><span class="rd-cat-text"><span class="rd-cat-label">ที่อยู่</span><span class="rd-cat-hint">บ้านเลขที่ ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์</span></span><span class="rd-cat-count" data-count="address">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="birth" checked /><span class="rd-cat-text"><span class="rd-cat-label">วันเกิด / อายุ</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="birth">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="sensitive" checked /><span class="rd-cat-text"><span class="rd-cat-label">ข้อมูลอ่อนไหว</span><span class="rd-cat-hint">ศาสนา เชื้อชาติ สัญชาติ สถานภาพ น้ำหนัก ส่วนสูง กรุ๊ปเลือด โรคประจำตัว</span></span><span class="rd-cat-count" data-count="sensitive">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="photo" checked /><span class="rd-cat-text"><span class="rd-cat-label">รูปถ่าย</span><span class="rd-cat-hint">รูปภาพขนาดเล็กถึงกลางในเอกสาร</span></span><span class="rd-cat-count" data-count="photo">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="name" checked /><span class="rd-cat-text"><span class="rd-cat-label">ชื่อ-นามสกุลที่ระบุ</span><span class="rd-cat-hint">พิมพ์ชื่อด้านล่าง</span></span><span class="rd-cat-count" data-count="name">0</span></label>
+        </div>
+        <div class="field">
+          <label for="redact-names">ชื่อ-นามสกุลผู้สมัคร (ถ้ามี)</label>
+          <input type="text" id="redact-names" placeholder="เช่น สมชาย ใจดี, Somchai Jaidee" />
+          <button type="button" class="rd-suggest" id="redact-name-suggest" hidden></button>
+        </div>
+        <div class="field">
+          <label for="redact-style">รูปแบบกล่อง</label>
+          <select id="redact-style">
+            <option value="black">ดำทึบ</option>
+            <option value="label">กล่องเทา + คำว่า "ข้อมูลส่วนบุคคล"</option>
+          </select>
+        </div>
+        <details class="rd-hits-wrap">
+          <summary>รายการที่พบ <span id="redact-hit-total">0</span> จุด</summary>
+          <ul class="rd-hits" id="redact-hits"></ul>
+        </details>
+        <div class="row">
+          <button class="btn" id="redact-run" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+            ถมดำและสร้างไฟล์
+          </button>
+        </div>
+        <progress id="redact-progress" max="100" value="0" style="display:none;"></progress>
+        <div class="status" id="redact-status"></div>
+        <div class="result" id="redact-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="redact-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="redact-filename-input" />
+                <span class="filename-ext" id="redact-filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="redact-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+        <p class="rd-note">หน้าที่มีการถมดำจะถูกแปลงเป็นภาพเพื่อลบข้อมูลใต้กล่องออกจริง และใส่ข้อความที่ค้นหาได้กลับเฉพาะส่วนที่ไม่ได้ถมดำ ระบบล้างชื่อผู้สร้างไฟล์ ลิงก์ และ comment ออกด้วย</p>
+      </aside>
+    </div>
+  </section>
+
   <section class="panel" id="panel-pdfjpg">
     <div class="panel-head">
       <div class="panel-icon" aria-hidden="true">
@@ -1847,7 +1945,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261030f"></script>
+<script src="script.js?v=20261106a"></script>
 
 </body>
 </html>
