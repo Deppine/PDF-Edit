@@ -938,115 +938,227 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
 /* ================= WATERMARK ================= */
 (function(){
-  const drop = document.getElementById("watermark-drop");
-  const input = document.getElementById("watermark-input");
-  const body = document.getElementById("watermark-body");
-  const textInput = document.getElementById("watermark-text");
-  const colorInput = document.getElementById("watermark-color");
-  const sizeRange = document.getElementById("watermark-size");
-  const sizeVal = document.getElementById("watermark-size-val");
-  const opRange = document.getElementById("watermark-opacity");
-  const opVal = document.getElementById("watermark-opacity-val");
-  const rotRange = document.getElementById("watermark-rotate");
-  const rotVal = document.getElementById("watermark-rotate-val");
-  const runBtn = document.getElementById("watermark-run");
-  const status = document.getElementById("watermark-status");
-  const result = document.getElementById("watermark-result");
-  const downloadBtn = document.getElementById("watermark-download");
-  const filenameEl = document.getElementById("watermark-filename");
-  const filenameInput = document.getElementById("watermark-filename-input");
-  const removeBtn = document.getElementById("watermark-remove");
-  const previewPlaceholder = document.getElementById("watermark-preview-placeholder");
-  const previewCanvas = document.getElementById("watermark-preview");
-  const previewHint = document.getElementById("watermark-preview-hint");
-  const resetPosBtn = document.getElementById("watermark-reset-pos");
-  const positionModeGroup = document.getElementById("watermark-position-mode");
+  const $ = id => document.getElementById(id);
+  const drop = $("watermark-drop");
+  const input = $("watermark-input");
+  const body = $("watermark-body");
+  const textInput = $("watermark-text");
+  const colorInput = $("watermark-color");
+  const sizeRange = $("watermark-size");
+  const sizeVal = $("watermark-size-val");
+  const opRange = $("watermark-opacity");
+  const opVal = $("watermark-opacity-val");
+  const rotRange = $("watermark-rotate");
+  const rotVal = $("watermark-rotate-val");
+  const runBtn = $("watermark-run");
+  const status = $("watermark-status");
+  const result = $("watermark-result");
+  const downloadBtn = $("watermark-download");
+  const filenameEl = $("watermark-filename");
+  const filenameInput = $("watermark-filename-input");
+  const removeBtn = $("watermark-remove");
+  const previewPlaceholder = $("watermark-preview-placeholder");
+  const previewCanvas = $("watermark-preview");
+  const previewHint = $("watermark-preview-hint");
+  const resetPosBtn = $("watermark-reset-pos");
+  const positionModeGroup = $("watermark-position-mode");
   const positionModeBtns = positionModeGroup ? Array.from(positionModeGroup.querySelectorAll(".chip")) : [];
+  const pagesBox = $("watermark-pages");
+  const grid = $("watermark-grid");
+  const rangeInput = $("watermark-range");
+  const allBtn = $("watermark-all");
+  const noneBtn = $("watermark-none");
+  const scalePagesChk = $("watermark-scale-pages");
+
+  const PREVIEW_W = 440;   // CSS px width of the large preview
+  const THUMB_W = 110;     // CSS px width of a thumbnail
   let buffer = null, fileName = "document", outputBlob = null;
-  let basePageCanvas = null, pageScale = 1;
+  let pjs = null, loadSeq = 0;
+  // per page: visual (as displayed, /Rotate applied) size in points, and the
+  // rendered thumbnail once it has scrolled into view
+  let pages = [];          // [{ w, h, thumbBase: canvas|null, cell, canvas, check }]
+  let selected = new Set();
+  let current = 1;         // page shown large
+  let bigBase = null, bigScale = 1;
   // Where the user dragged the watermark to, as a fraction of the page (0-1,
-  // y measured from the TOP like canvas space) — null means "not moved yet",
-  // in which case the watermark stays auto-centered (horizontally centered
-  // on its own text width, vertically on the page) exactly as before this
-  // feature existed. Kept across text/size/color/rotation changes (the user
-  // chose a spot; tweaking the wording shouldn't un-choose it), but reset
-  // whenever a different file is loaded or the mode is switched back to
-  // "auto" — that switch is the deliberate "just fix it in the center, I
-  // don't want to think about this" choice, so it should actually put the
-  // watermark back there, not just hide the controls while leaving a stray
-  // drag position in effect.
+  // y measured from the TOP like canvas space) — null means auto-centered.
+  // The same fractions apply to every page. Reset when a new file loads or
+  // the mode goes back to "auto".
   let customPos = null;
-  // "auto" = always centered, dragging disabled (the safe default for anyone
-  // who doesn't want to fuss with placement — nothing they do on the preview
-  // can nudge it off-center by accident). "custom" = drag-to-position, as
-  // built earlier. A plain two-way toggle rather than leaving dragging
-  // always-on everywhere: an accidental click/drag on the preview used to
-  // silently move the watermark even for people who never meant to touch
-  // it, which is exactly the footgun this mode switch removes.
+  // "auto" = always centered, dragging disabled; "custom" = drag to position.
   let positionMode = "auto";
 
-  function applyPositionModeUI(){
-    positionModeBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.mode === positionMode));
-    const customActive = positionMode === "custom" && !!basePageCanvas;
-    previewCanvas.classList.toggle("draggable", customActive);
-    if(previewHint) previewHint.style.display = customActive ? "flex" : "none";
+  /* ---------- geometry shared by preview and export ---------- */
+  // Size of the watermark on a page. The slider is in points for a page the
+  // size of page 1; with "scale by page" on, other pages scale by their
+  // shorter side, so A4 landscape matches A4 portrait and A3 gets ~1.41x.
+  function sizeScaleFor(w, h){
+    if(!scalePagesChk.checked || !pages.length) return 1;
+    const ref = Math.min(pages[0].w, pages[0].h) || 1;
+    return Math.min(w, h) / ref;
   }
-
-  function drawPreview(){
-    if(!basePageCanvas) return;
-    const ctx = previewCanvas.getContext("2d");
-    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    ctx.drawImage(basePageCanvas, 0, 0);
-    const text = textInput.value || "WATERMARK";
-    const sizePt = parseFloat(sizeRange.value) || 48;
-    const opacity = (parseInt(opRange.value, 10) || 0) / 100;
-    const rotation = parseFloat(rotRange.value) || 0;
-    const color = colorInput.value || "#808080";
-    const fontPx = sizePt * pageScale;
+  function settings(){
+    return {
+      text: textInput.value || "WATERMARK",
+      sizePt: parseFloat(sizeRange.value) || 48,
+      opacity: (parseInt(opRange.value, 10) || 0) / 100,
+      rotation: parseFloat(rotRange.value) || 0,
+      color: colorInput.value || "#808080",
+    };
+  }
+  // Paint the watermark over a page image. pxPerPt = canvas px per point.
+  function paintWatermark(ctx, cw, ch, pxPerPt, pageW, pageH){
+    const st = settings();
+    const fontPx = st.sizePt * sizeScaleFor(pageW, pageH) * pxPerPt;
     ctx.save();
     ctx.font = `${fontPx}px "Noto Sans Thai","Leelawadee UI","Tahoma",sans-serif`;
     ctx.textBaseline = "alphabetic";
-    const textWidthPx = ctx.measureText(text).width;
-    const cax = customPos ? customPos.fracX * previewCanvas.width : previewCanvas.width / 2 - textWidthPx / 2;
-    const cay = customPos ? customPos.fracY * previewCanvas.height : previewCanvas.height / 2;
-    ctx.translate(cax, cay);
-    ctx.rotate(-rotation * Math.PI / 180);
-    ctx.globalAlpha = opacity;
-    ctx.fillStyle = color;
-    ctx.fillText(text, 0, 0);
+    const tw = ctx.measureText(st.text).width;
+    const ax = customPos ? customPos.fracX * cw : cw / 2 - tw / 2;
+    const ay = customPos ? customPos.fracY * ch : ch / 2;
+    ctx.translate(ax, ay);
+    ctx.rotate(-st.rotation * Math.PI / 180);
+    ctx.globalAlpha = st.opacity;
+    ctx.fillStyle = st.color;
+    ctx.fillText(st.text, 0, 0);
     ctx.restore();
   }
 
-  function resetPreview(){
-    basePageCanvas = null;
-    customPos = null;
-    positionMode = "auto";
-    previewCanvas.style.display = "none";
-    previewPlaceholder.style.display = "flex";
+  /* ---------- large preview ---------- */
+  function applyPositionModeUI(){
+    positionModeBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.mode === positionMode));
+    const customActive = positionMode === "custom" && !!bigBase;
+    previewCanvas.classList.toggle("draggable", customActive);
+    if(previewHint) previewHint.style.display = customActive ? "flex" : "none";
+  }
+  function drawBig(){
+    if(!bigBase) return;
+    const ctx = previewCanvas.getContext("2d");
+    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    ctx.drawImage(bigBase, 0, 0);
+    const pg = pages[current - 1];
+    if(selected.has(current)) paintWatermark(ctx, previewCanvas.width, previewCanvas.height, bigScale, pg.w, pg.h);
+    previewCanvas.classList.toggle("wm-off", !selected.has(current));
+    previewCanvas.title = selected.has(current) ? `หน้า ${current}` : `หน้า ${current} (ไม่ได้เลือกใส่ลายน้ำ)`;
+  }
+  let bigSeq = 0;
+  async function showPage(n){
+    if(!pjs) return;
+    current = n;
+    const my = ++bigSeq;
+    const page = await pjs.getPage(n);
+    if(my !== bigSeq) return;
+    const base = page.getViewport({ scale: 1 });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const scale = (PREVIEW_W / base.width) * dpr;
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    if(my !== bigSeq) return;
+    bigBase = c; bigScale = scale;
+    previewCanvas.width = c.width; previewCanvas.height = c.height;
+    previewCanvas.style.width = (c.width / dpr) + "px";
+    previewPlaceholder.style.display = "none";
+    previewCanvas.style.display = "block";
+    pages.forEach((p, i)=> p.cell && p.cell.classList.toggle("current", i + 1 === n));
     applyPositionModeUI();
+    drawBig();
   }
 
-  // Drag-to-reposition directly on the preview canvas — only live in "custom"
-  // mode (see positionMode above). Wherever the pointer is becomes the
-  // watermark's new anchor point, in real time (pointer events cover both
-  // mouse and touch). A single click also counts as a one-step "move it
-  // here" — no separate click-vs-drag distinction needed since there's
-  // nothing else on this canvas to click.
+  /* ---------- thumbnails (rendered when scrolled into view) ---------- */
+  let io = null;
+  function drawThumb(i){
+    const p = pages[i];
+    if(!p || !p.thumbBase) return;
+    const ctx = p.canvas.getContext("2d");
+    ctx.clearRect(0, 0, p.canvas.width, p.canvas.height);
+    ctx.drawImage(p.thumbBase, 0, 0);
+    if(selected.has(i + 1)) paintWatermark(ctx, p.canvas.width, p.canvas.height, p.thumbBase.width / p.w, p.w, p.h);
+  }
+  async function renderThumb(i, seq){
+    const p = pages[i];
+    if(!p || p.thumbBase || p.rendering || !pjs) return;
+    p.rendering = true;
+    try{
+      const page = await pjs.getPage(i + 1);
+      if(seq !== loadSeq) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const vp = page.getViewport({ scale: (THUMB_W / p.w) * dpr });
+      const c = document.createElement("canvas");
+      c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+      const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      if(seq !== loadSeq) return;
+      p.thumbBase = c;
+      p.canvas.width = c.width; p.canvas.height = c.height;
+      drawThumb(i);
+      page.cleanup();
+    }catch(e){ /* leave the placeholder */ }
+    finally{ p.rendering = false; }
+  }
+  function buildGrid(seq){
+    grid.innerHTML = "";
+    if(io) io.disconnect();
+    io = new IntersectionObserver(entries=>{
+      entries.forEach(en=>{ if(en.isIntersecting){ io.unobserve(en.target); renderThumb(+en.target.dataset.i, seq); } });
+    }, { root: grid, rootMargin: "200px" });
+    pages.forEach((p, i)=>{
+      const cell = document.createElement("div");
+      cell.className = "pagecell wm-thumb";
+      cell.dataset.i = i;
+      const canvas = document.createElement("canvas");
+      // placeholder with the page's own proportions until it renders
+      canvas.width = THUMB_W; canvas.height = Math.round(THUMB_W * p.h / p.w);
+      const chk = document.createElement("input");
+      chk.type = "checkbox"; chk.className = "wm-thumb-check";
+      chk.setAttribute("aria-label", `ใส่ลายน้ำหน้า ${i + 1}`);
+      chk.addEventListener("click", e => e.stopPropagation());
+      chk.addEventListener("change", ()=>{
+        if(chk.checked) selected.add(i + 1); else selected.delete(i + 1);
+        rangeInput.value = rangesToString(Array.from(selected));
+        syncSelectionUI();
+      });
+      const num = document.createElement("div");
+      num.className = "num"; num.textContent = i + 1;
+      cell.append(canvas, chk, num);
+      cell.addEventListener("click", ()=> showPage(i + 1));
+      p.cell = cell; p.canvas = canvas; p.check = chk;
+      grid.appendChild(cell);
+      io.observe(cell);
+    });
+  }
+  function syncSelectionUI(){
+    pages.forEach((p, i)=>{
+      const on = selected.has(i + 1);
+      if(p.check) p.check.checked = on;
+      if(p.cell) p.cell.classList.toggle("off", !on);
+      drawThumb(i);
+    });
+    drawBig();
+    runBtn.disabled = !buffer || selected.size === 0;
+    clearResult();
+  }
+  function redrawAll(){
+    drawBig();
+    pages.forEach((_, i)=> drawThumb(i));
+    clearResult();
+  }
+  function clearResult(){ outputBlob = null; result.classList.remove("show"); }
+
+  /* ---------- drag to position (custom mode) ---------- */
   function setPosFromEvent(e){
     const rect = previewCanvas.getBoundingClientRect();
     if(!rect.width || !rect.height) return;
-    const scaleX = previewCanvas.width / rect.width;
-    const scaleY = previewCanvas.height / rect.height;
-    const px = (e.clientX - rect.left) * scaleX;
-    const py = (e.clientY - rect.top) * scaleY;
     customPos = {
-      fracX: Math.max(0, Math.min(1, px / previewCanvas.width)),
-      fracY: Math.max(0, Math.min(1, py / previewCanvas.height)),
+      fracX: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      fracY: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
     };
-    drawPreview();
+    drawBig();
   }
   previewCanvas.addEventListener("pointerdown", (e)=>{
-    if(!basePageCanvas || positionMode !== "custom") return;
+    if(!bigBase || positionMode !== "custom") return;
     previewCanvas.setPointerCapture(e.pointerId);
     previewCanvas.classList.add("dragging");
     setPosFromEvent(e);
@@ -1055,50 +1167,87 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(!previewCanvas.classList.contains("dragging")) return;
     setPosFromEvent(e);
   });
-  function endWatermarkDrag(){ previewCanvas.classList.remove("dragging"); }
+  function endWatermarkDrag(){
+    if(!previewCanvas.classList.contains("dragging")) return;
+    previewCanvas.classList.remove("dragging");
+    redrawAll(); // thumbnails follow once the drag ends
+  }
   previewCanvas.addEventListener("pointerup", endWatermarkDrag);
   previewCanvas.addEventListener("pointercancel", endWatermarkDrag);
-  if(resetPosBtn){
-    resetPosBtn.addEventListener("click", ()=>{ customPos = null; drawPreview(); });
-  }
+  if(resetPosBtn) resetPosBtn.addEventListener("click", ()=>{ customPos = null; redrawAll(); });
   positionModeBtns.forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const mode = btn.dataset.mode === "custom" ? "custom" : "auto";
       if(mode === positionMode) return;
       positionMode = mode;
-      if(positionMode === "auto") customPos = null; // "fix it centered" should actually re-center, not just hide the controls
+      if(positionMode === "auto") customPos = null;
       applyPositionModeUI();
-      drawPreview();
+      redrawAll();
     });
   });
 
-  sizeRange.addEventListener("input", ()=>{ sizeVal.textContent = sizeRange.value; drawPreview(); });
-  opRange.addEventListener("input", ()=>{ opVal.textContent = opRange.value + "%"; drawPreview(); });
-  rotRange.addEventListener("input", ()=>{ rotVal.textContent = rotRange.value + "°"; drawPreview(); });
-  textInput.addEventListener("input", drawPreview);
-  colorInput.addEventListener("input", drawPreview);
+  // live controls: the large preview follows every input event; thumbnails
+  // are batched to one redraw per frame so a long document stays smooth
+  let thumbRaf = 0;
+  function liveRedraw(){
+    drawBig(); clearResult();
+    if(!thumbRaf) thumbRaf = requestAnimationFrame(()=>{ thumbRaf = 0; pages.forEach((_, i)=> drawThumb(i)); });
+  }
+  sizeRange.addEventListener("input", ()=>{ sizeVal.textContent = sizeRange.value; liveRedraw(); });
+  opRange.addEventListener("input", ()=>{ opVal.textContent = opRange.value + "%"; liveRedraw(); });
+  rotRange.addEventListener("input", ()=>{ rotVal.textContent = rotRange.value + "°"; liveRedraw(); });
+  textInput.addEventListener("input", liveRedraw);
+  colorInput.addEventListener("input", liveRedraw);
+  scalePagesChk.addEventListener("change", liveRedraw);
 
+  rangeInput.addEventListener("input", ()=>{ selected = new Set(parseRanges(rangeInput.value, pages.length)); syncSelectionUI(); });
+  allBtn.onclick = ()=>{ selected = new Set(pages.map((_, i)=> i + 1)); rangeInput.value = rangesToString(Array.from(selected)); syncSelectionUI(); };
+  noneBtn.onclick = ()=>{ selected = new Set(); rangeInput.value = ""; syncSelectionUI(); };
+
+  /* ---------- load ---------- */
+  function resetPreview(){
+    bigBase = null; customPos = null; positionMode = "auto";
+    previewCanvas.style.display = "none";
+    previewPlaceholder.style.display = "flex";
+    pagesBox.hidden = true; grid.innerHTML = ""; pages = []; selected = new Set();
+    if(io){ io.disconnect(); io = null; }
+    if(pjs){ try{ pjs.destroy(); }catch(e){} pjs = null; }
+    applyPositionModeUI();
+  }
   wireDrop(drop, input, async (files)=>{
     const file = files[0];
-    fileName = file.name.replace(/\.pdf$/i,"");
+    const seq = ++loadSeq;
+    resetPreview();
+    fileName = file.name.replace(/\.pdf$/i, "");
     buffer = await readFileAsArrayBuffer(file);
     filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
     body.style.display = "block";
-    result.classList.remove("show");
-    setStatus(status, "", "");
-    customPos = null; // new document → start back at the auto-centered default
-    positionMode = "auto";
+    clearResult();
+    setStatus(status, "กำลังโหลดหน้าเอกสาร...", "loading");
     try{
-      const { canvas: baseCanvas, scale } = await renderPageCanvas(buffer, 1, 220);
-      basePageCanvas = baseCanvas;
-      pageScale = scale;
-      previewCanvas.width = baseCanvas.width;
-      previewCanvas.height = baseCanvas.height;
-      previewPlaceholder.style.display = "none";
-      previewCanvas.style.display = "block";
-      applyPositionModeUI();
-      drawPreview();
-    }catch(e){ resetPreview(); }
+      pjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      if(seq !== loadSeq) return;
+      const list = [];
+      for(let i = 1; i <= pjs.numPages; i++){
+        const vp = (await pjs.getPage(i)).getViewport({ scale: 1 });
+        list.push({ w: vp.width, h: vp.height, thumbBase: null });
+      }
+      if(seq !== loadSeq) return;
+      pages = list;
+      selected = new Set(pages.map((_, i)=> i + 1));
+      rangeInput.value = pages.length ? `1-${pages.length}` : "";
+      pagesBox.hidden = false;
+      buildGrid(seq);
+      syncSelectionUI();
+      await showPage(1);
+      const odd = pages.some(p => Math.abs(Math.min(p.w, p.h) - Math.min(pages[0].w, pages[0].h)) > 2 || (p.w > p.h) !== (pages[0].w > pages[0].h));
+      setStatus(status, `โหลดสำเร็จ · ${pages.length} หน้า` + (odd ? " · มีหน้าที่ขนาดหรือแนวต่างจากหน้าแรก ตรวจดูในรูปย่อด้านล่างได้" : ""), odd ? "warn" : "ok");
+    }catch(e){
+      buffer = null;
+      resetPreview();
+      setStatus(status, (e && e.name === "PasswordException") ? 'ไฟล์นี้ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน' : "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+      runBtn.disabled = true;
+    }
   });
 
   function hexToRgb01(hex){
@@ -1106,8 +1255,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return { r: ((v>>16)&255)/255, g: ((v>>8)&255)/255, b: (v&255)/255 };
   }
 
+  /* ---------- export ---------- */
   runBtn.onclick = async ()=>{
-    if(!buffer) return;
+    if(!buffer || !selected.size) return;
     runBtn.disabled = true;
     setStatus(status, "กำลังใส่ลายน้ำ...", "loading");
     try{
@@ -1115,75 +1265,43 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       ({ doc } = await autoDecryptIfNeeded(doc, buffer));
       doc.registerFontkit(fontkit);
       const font = await doc.embedFont(thaiFontBytes(), { subset: true });
-      const text = textInput.value || "WATERMARK";
-      const size = parseFloat(sizeRange.value);
-      const opacity = parseInt(opRange.value,10) / 100;
-      const rotation = parseFloat(rotRange.value);
-      const { r,g,b } = hexToRgb01(colorInput.value);
-      const textWidth = font.widthOfTextAtSize(text, size);
-      doc.getPages().forEach(page=>{
-        // page.getSize() returns the RAW page box, ignoring any /Rotate the
-        // page carries — but the preview was built from pdf.js, which DOES
-        // render pages according to their /Rotate (so a portrait-looking
-        // scanned invoice whose raw box is actually landscape-with-Rotate-90
-        // still previews upright). If we naively drew at (raw width/2,
-        // raw height/2) with the plain slider rotation on such a page, a
-        // PDF viewer applying that same /Rotate on display would end up
-        // showing the watermark at the wrong spot, size-relative-position,
-        // and angle — exactly the "preview vs. exported file don't match"
-        // symptom. So: compute the position/rotation in the same VISUAL
-        // (as-displayed) space the preview used, then transform back into
-        // the page's raw, pre-rotation coordinate space before calling
-        // drawText, which always operates in raw space regardless of
-        // /Rotate.
+      const st = settings();
+      const { r,g,b } = hexToRgb01(st.color);
+      let done = 0;
+      doc.getPages().forEach((page, idx)=>{
+        if(!selected.has(idx + 1)) return;
+        // page.getSize() is the RAW box, ignoring /Rotate, while the preview
+        // (pdf.js) shows pages as displayed. Compute in that visual space,
+        // then map back to raw space for drawText.
         const { width: W, height: H } = page.getSize();
-        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360; // normalize to 0/90/180/270
+        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360;
         const swapped = angle === 90 || angle === 270;
-        const Wv = swapped ? H : W, Hv = swapped ? W : H; // visual (as-displayed) page dimensions
-
-        // customPos.fracY is measured from the top like canvas space (where
-        // it was captured while dragging on the preview, itself built in
-        // this same visual space); flipped here since PDF y grows from the
-        // bottom. No customPos yet → same auto-centered default this always
-        // used, just now expressed in visual space.
+        const Wv = swapped ? H : W, Hv = swapped ? W : H;
+        const size = st.sizePt * sizeScaleFor(Wv, Hv);
+        const textWidth = font.widthOfTextAtSize(st.text, size);
         const visX = customPos ? customPos.fracX * Wv : Wv/2 - textWidth/2;
         const visY = customPos ? Hv - customPos.fracY * Hv : Hv/2;
-
-        // Map the visual-space anchor back to the page's raw coordinate
-        // space. Derived from how each /Rotate value maps raw page corners
-        // to their displayed position (verified against pdf-lib's actual
-        // rendered output for each angle) — an identity for 0, and the
-        // appropriate axis swap/flip for 90/180/270.
         let x, y;
         if(angle === 90){ x = W - visY; y = visX; }
         else if(angle === 180){ x = W - visX; y = H - visY; }
         else if(angle === 270){ x = visY; y = H - visX; }
         else { x = visX; y = visY; }
-
-        page.drawText(text, {
-          x, y,
-          size, font, color: rgb(r,g,b), opacity,
-          // The same +angle composition that maps the visual anchor point
-          // back to raw space also applies to rotation: a page displayed
-          // rotated by `angle` needs its raw-space text rotation offset by
-          // that same amount for the FINAL on-screen angle to still read as
-          // the plain `rotation` value the user picked (verified the same
-          // way as the position mapping above).
-          rotate: degrees(rotation + angle),
-        });
+        page.drawText(st.text, { x, y, size, font, color: rgb(r,g,b), opacity: st.opacity, rotate: degrees(st.rotation + angle) });
+        done++;
       });
       const bytes = await doc.save();
       outputBlob = new Blob([bytes], { type:"application/pdf" });
-      result.querySelector(".stats").innerHTML = `<b>${doc.getPageCount()}</b> หน้า · <b>${fmtBytes(outputBlob.size)}</b>`;
+      result.querySelector(".stats").innerHTML = `ใส่ลายน้ำ <b>${done}</b> จาก ${doc.getPageCount()} หน้า · <b>${fmtBytes(outputBlob.size)}</b>`;
       setFilenameDefault(filenameInput, `${fileName}_watermarked`);
       result.classList.add("show");
       setStatus(status, "สำเร็จ", "ok");
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
     }
-    runBtn.disabled = false;
+    runBtn.disabled = !buffer || selected.size === 0;
   };
   removeBtn.onclick = ()=>{
+    loadSeq++;
     buffer = null; outputBlob = null;
     body.style.display = "none";
     input.value = "";

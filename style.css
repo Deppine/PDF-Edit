@@ -1045,3 +1045,16 @@ nav.tabs-groups{gap:16px;}
 #quickedit-popover.qe-docked .qe-popover-delete{order:3; flex:1 1 100%; margin-right:0; justify-content:center;
   background:transparent; color:var(--danger); border:1px solid var(--danger); box-shadow:none;}
 #quickedit-popover.qe-docked .qe-popover-delete:hover{background:var(--danger-soft);}
+
+/* ---------- ใส่ลายน้ำ: page thumbnails + selection ---------- */
+.wm-preview-canvas.wm-off{opacity:.55;}
+.wm-pages{margin-top:6px; border-top:1px solid var(--border); padding-top:16px;}
+.wm-pages-head{display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px;}
+.wm-pages-btns{display:flex; gap:6px;}
+.wm-pages-tip{font-size:12.5px; color:var(--text-3); margin-top:8px;}
+.wm-grid.pagegrid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); max-height:440px; margin-top:10px;}
+.pagecell.wm-thumb{position:relative; cursor:pointer;}
+.pagecell.wm-thumb.current{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-ring);}
+.pagecell.wm-thumb.off canvas{opacity:.45;}
+.pagecell.wm-thumb.off .num{color:var(--text-3);}
+.wm-thumb-check{position:absolute; top:6px; right:6px; width:18px; height:18px; margin:0; accent-color:var(--accent); cursor:pointer; background:#fff; border-radius:4px; box-shadow:0 0 0 2px #fff;}

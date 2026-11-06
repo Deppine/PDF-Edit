@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261106b" />
+<link rel="stylesheet" href="style.css?v=20261106c" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -513,7 +513,7 @@
       </div>
       <h2>ใส่ลายน้ำ</h2>
     </div>
-    <p class="desc">เพิ่มข้อความลายน้ำในทุกหน้าของเอกสาร เลือกให้อยู่กึ่งกลางอัตโนมัติ หรือกำหนดตำแหน่งเองแล้วลากปรับได้อย่างอิสระ</p>
+    <p class="desc">เพิ่มข้อความลายน้ำลงในเอกสาร ดูตัวอย่างได้ทุกหน้า เลือกเฉพาะหน้าที่ต้องการ และให้อยู่กึ่งกลางอัตโนมัติหรือลากกำหนดตำแหน่งเอง</p>
     <div class="panel-body has-side">
       <div class="tool-main">
     <div class="drop" id="watermark-drop">
@@ -543,6 +543,21 @@
       <div class="wm-preview-hint" id="watermark-preview-hint" style="display:none;">
         <span>ลากบนตัวอย่างเพื่อย้ายตำแหน่งลายน้ำได้อย่างอิสระ</span>
         <button type="button" class="btn secondary small" id="watermark-reset-pos">รีเซ็ตตำแหน่งกลางหน้า</button>
+      </div>
+
+      <div class="wm-pages" id="watermark-pages" hidden>
+        <div class="wm-pages-head">
+          <div class="field" style="flex:1; min-width:200px; margin:0;">
+            <label for="watermark-range">หน้าที่จะใส่ลายน้ำ (เช่น 2-10)</label>
+            <input type="text" id="watermark-range" placeholder="เว้นว่าง = ยังไม่เลือกหน้า" />
+          </div>
+          <div class="wm-pages-btns">
+            <button type="button" class="btn secondary small" id="watermark-all">ทุกหน้า</button>
+            <button type="button" class="btn secondary small" id="watermark-none">ล้างการเลือก</button>
+          </div>
+        </div>
+        <div class="wm-pages-tip">กดรูปย่อเพื่อดูหน้านั้นเป็นภาพใหญ่ · ติ๊กมุมรูปเพื่อเลือก/ไม่เลือกหน้า</div>
+        <div class="pagegrid wm-grid" id="watermark-grid"></div>
       </div>
 
 
@@ -584,6 +599,7 @@
           <input type="range" id="watermark-rotate" min="0" max="360" value="45" />
         </div>
       </div>
+      <label class="checkline" style="margin:4px 0 14px;"><input type="checkbox" id="watermark-scale-pages" checked /> ปรับขนาดลายน้ำตามขนาดหน้า (หน้าใหญ่หรือ A3 ได้ลายน้ำใหญ่ตามสัดส่วน)</label>
       <div class="row">
         <button class="btn" id="watermark-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1945,7 +1961,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261106a"></script>
+<script src="script.js?v=20261106c"></script>
 
 </body>
 </html>
