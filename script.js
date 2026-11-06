@@ -110,7 +110,27 @@ const _escapeHtmlMap = { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, (c)=>_escapeHtmlMap[c]);
 }
+// Library errors (pdf.js / pdf-lib) arrive in English; menus append them to
+// their own Thai prefix. Swap the common ones for a Thai explanation the
+// user can act on, in one place for every menu.
+const FRIENDLY_ERRORS = [
+  [/No password given|PasswordException|password required|Incorrect Password/i, 'ไฟล์นี้ตั้งรหัสผ่านสำหรับเปิดไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน'],
+  [/Invalid PDF structure|No PDF header found|Failed to parse PDF document|Invalid XRef|InvalidPDFException/i, "ไฟล์นี้ไม่ใช่ PDF หรือไฟล์เสียหาย ลองเปิดด้วยโปรแกรมอ่าน PDF ดูก่อน"],
+  [/Missing PDF|Unexpected server response/i, "อ่านไฟล์ไม่ได้ ลองเลือกไฟล์ใหม่อีกครั้ง"],
+];
+function friendlyError(msg){
+  for(const [re, th] of FRIENDLY_ERRORS){
+    if(!re.test(msg)) continue;
+    // keep the menu's own Thai prefix ("เกิดข้อผิดพลาด", "ไม่สามารถอ่านไฟล์ x ได้"),
+    // replace the English library text that follows it
+    const idx = msg.search(/[:(（]\s*[A-Za-z]/);
+    const prefix = idx > 0 ? msg.slice(0, idx).trim() : "";
+    return prefix ? prefix + ": " + th : th;
+  }
+  return msg;
+}
 function setStatus(el, msg, kind){
+  if(kind === "err" && msg) msg = friendlyError(String(msg));
   el.className = "status" + (kind ? " " + kind : "");
   // msg is always treated as plain text (escaped) — only the loading spinner markup is trusted HTML.
   el.innerHTML = (kind === "loading" ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
@@ -176,13 +196,27 @@ function dedupeOcrLines(rawLines){
       const oy = Math.max(0, Math.min(cb.y1, kb.y1) - Math.max(cb.y0, kb.y0));
       const overlapArea = ox * oy;
       const kArea = Math.max(1, (kb.x1 - kb.x0) * (kb.y1 - kb.y0));
-      return overlapArea / Math.min(candArea, kArea) > 0.4;
+      // A ghost is the SAME physical line read twice, so it also sits at the
+      // same height. Thai line boxes are tall (marks above and below), so two
+      // neighbouring lines can overlap a lot without being duplicates — the
+      // centre check stops a real line from being dropped.
+      // Tesseract also sometimes returns a real line with a bloated box
+      // (stretching over the line above or a photo); a ghost has about the
+      // same height as the line it copies, so very different heights mean
+      // two different lines.
+      const hc = Math.max(1, cb.y1 - cb.y0), hk = Math.max(1, kb.y1 - kb.y0);
+      const minH = Math.min(hc, hk);
+      const sameRow = Math.abs((cb.y0 + cb.y1) / 2 - (kb.y0 + kb.y1) / 2) < minH * 0.35;
+      const sameHeight = Math.max(hc, hk) / minH < 1.6;
+      return sameRow && sameHeight && overlapArea / Math.min(candArea, kArea) > 0.4;
     });
     if(!isDuplicate) kept.push(cand);
   }
-  // Restore natural top-to-bottom, left-to-right reading order — the
-  // confidence sort above only decided who wins, not the output order.
-  kept.sort((a, b)=> (a.bbox.y0 - b.bbox.y0) || (a.bbox.x0 - b.bbox.x0));
+  // Restore Tesseract's own reading order (the order lines came in) — the
+  // confidence sort above only decided who wins. Re-sorting by box top
+  // misplaces a line whose box came back stretched upward.
+  const order = new Map(rawLines.map((l, i)=> [l, i]));
+  kept.sort((a, b)=> order.get(a) - order.get(b));
   return kept;
 }
 // pdf-lib does not actually support encrypted PDFs. `PDFDocument.load(..., {
@@ -769,6 +803,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let srcLib = await PDFDocument.load(buffer.slice(0), { ignoreEncryption:true });
       ({ doc: srcLib } = await autoDecryptIfNeeded(srcLib, buffer));
       const out = await PDFDocument.create();
+      out.registerFontkit(fontkit);
+      let textFont = null, hadText = false;
       const n = pdfjsDoc.numPages;
       for(let i=1;i<=n;i++){
         setStatus(status, `กำลังประมวลผลหน้า ${i}/${n}...`, "loading");
@@ -782,22 +818,57 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         const jpgUrl = canvas.toDataURL("image/jpeg", quality);
         const jpgBytes = Uint8Array.from(atob(jpgUrl.split(",")[1]), c=>c.charCodeAt(0));
         const jpgImage = await out.embedJpg(jpgBytes);
-        const origPage = srcLib.getPage(i-1);
-        const { width, height } = origPage.getSize();
+        // the render is upright (pdf.js applies /Rotate), so the new page
+        // takes the as-displayed size — the raw box would stretch a rotated page
+        const base = page.getViewport({ scale: 1 });
+        const width = base.width, height = base.height;
         const newPage = out.addPage([width, height]);
         newPage.drawImage(jpgImage, { x:0, y:0, width, height });
+        // keep the document searchable: put the page's text back as an
+        // invisible layer over the image
+        try{
+          const tc = await page.getTextContent();
+          for(const it of tc.items){
+            const str = (it.str || "").trim();
+            if(!str || !it.transform) continue;
+            if(!textFont) textFont = await out.embedFont(ocrFontBytes(), { subset: true });
+            hadText = true;
+            const tx = it.transform, fs = Math.hypot(tx[2], tx[3]) || 10;
+            const r = base.convertToViewportRectangle([tx[4], tx[5] - fs * 0.25, tx[4] + (it.width || fs), tx[5] + fs]);
+            const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]), yb = Math.max(r[1], r[3]), hh = Math.abs(r[3] - r[1]);
+            let size = Math.max(1, hh * 0.8);
+            try{
+              const mw = textFont.widthOfTextAtSize(str, size);
+              if(mw > 0) size = Math.max(1, size * Math.max(0.4, Math.min(2.5, (x1 - x0) / mw)));
+              newPage.drawText(str, { x: x0, y: height - yb + hh * 0.2, size, font: textFont, opacity: 0 });
+            }catch(e){ /* a glyph the font can't encode */ }
+          }
+        }catch(e){}
         progress.value = Math.round((i/n)*100);
         await new Promise(r=>setTimeout(r,0));
       }
-      const bytes = await out.save();
-      outputBlob = new Blob([bytes], { type:"application/pdf" });
-      const pct = Math.round((1 - outputBlob.size/originalSize) * 100);
-      result.querySelector(".stats").innerHTML =
-        `<b>${fmtBytes(originalSize)}</b> → <b>${fmtBytes(outputBlob.size)}</b>` +
-        (pct > 0 ? ` (ลดลง ${pct}%)` : ` (ไฟล์ใหญ่ขึ้น — ลองลดความละเอียด/คุณภาพ)`);
-      setFilenameDefault(filenameInput, `${fileName}_compressed`);
-      result.classList.add("show");
-      setStatus(status, "บีบอัดสำเร็จ", "ok");
+      const rasterBytes = await out.save({ useObjectStreams: true });
+      // A text-only PDF is usually smaller kept as vectors: also try a plain
+      // re-save (structure compressed, nothing re-rendered) and keep the smaller.
+      let losslessBytes = null;
+      try{ losslessBytes = await srcLib.save({ useObjectStreams: true }); }catch(e){}
+      let bytes = rasterBytes, method = "raster";
+      if(losslessBytes && losslessBytes.length <= rasterBytes.length){ bytes = losslessBytes; method = "lossless"; }
+      if(bytes.length >= originalSize){
+        outputBlob = null;
+        result.classList.remove("show");
+        setStatus(status, `ไฟล์นี้เล็กที่สุดแล้ว (${fmtBytes(originalSize)}) บีบอัดเพิ่มไม่ได้ ไม่ต้องดาวน์โหลดไฟล์ใหม่`, "warn");
+      }else{
+        outputBlob = new Blob([bytes], { type:"application/pdf" });
+        const pct = Math.round((1 - outputBlob.size/originalSize) * 100);
+        result.querySelector(".stats").innerHTML =
+          `<b>${fmtBytes(originalSize)}</b> → <b>${fmtBytes(outputBlob.size)}</b> (ลดลง ${pct}%)`;
+        setFilenameDefault(filenameInput, `${fileName}_compressed`);
+        result.classList.add("show");
+        setStatus(status, method === "lossless"
+          ? "บีบอัดสำเร็จ · ไฟล์นี้เป็นข้อความเป็นหลัก จึงบีบอัดโดยไม่แปลงเป็นภาพ คุณภาพเท่าเดิม"
+          : (hadText ? "บีบอัดสำเร็จ · ข้อความในไฟล์ยังค้นหาและคัดลอกได้" : "บีบอัดสำเร็จ"), "ok");
+      }
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
     }
@@ -904,15 +975,27 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       pages.forEach((page, idx)=>{
         const n = start + idx;
         const text = renderTemplate(template, n, total);
-        const { width, height } = page.getSize();
+        // Work in the page as it is DISPLAYED (/Rotate applied, visible crop
+        // box), then map back to raw page space — otherwise a rotated page
+        // gets its number sideways on the wrong edge.
+        const box = page.getCropBox();
+        const W = box.width, H = box.height, ox = box.x, oy = box.y;
+        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360;
+        const swapped = angle === 90 || angle === 270;
+        const Wv = swapped ? H : W, Hv = swapped ? W : H;
         const textWidth = font.widthOfTextAtSize(text, size);
-        let x, y;
+        let vx, vy;
         const pos = posSel.value;
-        if(pos.endsWith("center")) x = width/2 - textWidth/2;
-        else if(pos.endsWith("right")) x = width - margin - textWidth;
-        else x = margin;
-        y = pos.startsWith("top") ? height - margin : margin - size*0.3;
-        page.drawText(text, { x, y, size, font, color: rgb(0.25,0.25,0.28) });
+        if(pos.endsWith("center")) vx = Wv/2 - textWidth/2;
+        else if(pos.endsWith("right")) vx = Wv - margin - textWidth;
+        else vx = margin;
+        vy = pos.startsWith("top") ? Hv - margin : margin - size*0.3;
+        let x, y;
+        if(angle === 90){ x = W - vy; y = vx; }
+        else if(angle === 180){ x = W - vx; y = H - vy; }
+        else if(angle === 270){ x = vy; y = H - vx; }
+        else { x = vx; y = vy; }
+        page.drawText(text, { x: x + ox, y: y + oy, size, font, color: rgb(0.25,0.25,0.28), rotate: degrees(angle) });
       });
       const bytes = await doc.save();
       outputBlob = new Blob([bytes], { type:"application/pdf" });

@@ -987,9 +987,13 @@ nav.tabs-groups{gap:16px;}
 /* the page canvas can be wider than the space beside the edit card (laptop
    screens): center it with auto margins instead of justify-content:center,
    which pushed the page's left edge out of reach of the scrollbar */
-.qe-workspace .qe-stage-wrap{justify-content:flex-start;}
-.qe-workspace .qe-stage{margin:0 auto; flex-shrink:0;}
-.qe-workspace{grid-template-columns:minmax(0,1fr) 310px;}
+/* centre the page with auto margins, not justify-content: a page wider
+   than its box (phones, zoomed in) then scrolls from its left edge instead
+   of having the left part cut off — applies to every page stage
+   (แก้ไขเอกสาร, ลงลายเซ็น) */
+.qe-stage-wrap{justify-content:flex-start;}
+.qe-stage-wrap > .qe-stage{margin:0 auto; flex-shrink:0;}
+@media (min-width:1101px){ .qe-workspace{grid-template-columns:minmax(0,1fr) 310px;} }
 .qe-workspace .qe-stage-wrap{padding:20px;}
 
 /* ---------- ถมดำข้อมูลส่วนตัว (redact) ---------- */
