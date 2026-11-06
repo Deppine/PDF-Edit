@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261106d" />
+<link rel="stylesheet" href="style.css?v=20261106e" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -52,6 +52,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
           <span class="tab-label">บีบอัดไฟล์</span>
         </button>
+        <button data-tab="blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg>
+          <span class="tab-label">ลบหน้าว่าง</span>
+        </button>
       </div>
     </div>
 
@@ -77,6 +81,10 @@
         <button data-tab="watermark">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
           <span class="tab-label">ใส่ลายน้ำ</span>
+        </button>
+        <button data-tab="unwatermark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+          <span class="tab-label">ลบลายน้ำ</span>
         </button>
       </div>
     </div>
@@ -1472,6 +1480,144 @@
     </div>
   </section>
 
+  <section class="panel" id="panel-blank">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg></div>
+      <h2>ลบหน้าว่าง</h2>
+    </div>
+    <p class="desc">หาหน้าว่างในเอกสาร เช่น ด้านหลังกระดาษที่สแกนติดมา แล้วลบออกให้อัตโนมัติ ตรวจดูและเลือกเองได้ก่อนสร้างไฟล์</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="blank-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>1 ไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ไฟล์สแกนก็ได้ ระบบไม่สนใจจุดเล็กๆ และรอยทะลุจากด้านหลังกระดาษ</div>
+      <input type="file" id="blank-input" accept="application/pdf" />
+    </div>
+    <div id="blank-body" style="display:none;">
+      <div class="fileinfo">
+        <div class="fileinfo-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="fileinfo-name" id="blank-filename"></span>
+        </div>
+        <button class="btn secondary small" id="blank-remove">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          ลบไฟล์นี้
+        </button>
+      </div>
+      <div class="bl-summary" id="blank-summary"></div>
+      <div class="wm-pages-tip">กรอบแดง = หน้าที่จะถูกลบ · กดที่รูปเพื่อเปลี่ยน · ตัวเลขมุมล่างคือปริมาณหมึกบนหน้า</div>
+      <div class="pagegrid bl-grid" id="blank-grid"></div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
+        <div class="field">
+          <label for="blank-sens">ความไวในการหาหน้าว่าง</label>
+          <select id="blank-sens">
+            <option value="0.00005">ต่ำ · เฉพาะหน้าที่ไม่มีอะไรเลย</option>
+            <option value="0.001" selected>กลาง · ยอมให้มีจุด รอยเปื้อน หรือเลขหน้า (แนะนำ)</option>
+            <option value="0.005">สูง · รวมหน้าที่มีข้อความน้อยมาก เช่น บรรทัดเดียว</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <button type="button" class="btn secondary small" id="blank-keepall">ไม่ลบเลย</button>
+          <button type="button" class="btn secondary small" id="blank-redetect">หาใหม่ตามความไว</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="blank-run" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg> ลบหน้าที่เลือกและสร้างไฟล์</button>
+        </div>
+        <progress id="blank-progress" max="100" value="0" style="display:none;"></progress>
+        <div class="status" id="blank-status"></div>
+        <div class="result" id="blank-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="blank-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="blank-filename-input" />
+                <span class="filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="blank-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-unwatermark">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg></div>
+      <h2>ลบลายน้ำ</h2>
+    </div>
+    <p class="desc">ลบลายน้ำที่ใส่ไว้เป็นข้อความหรือวัตถุแยกในไฟล์ PDF (เช่น ที่ใส่จากเมนูใส่ลายน้ำ, Acrobat, Word หรือเว็บแปลงไฟล์) ใช้กับเอกสารของคุณหรือที่ได้รับอนุญาตเท่านั้น</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="unwatermark-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>1 ไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ลายน้ำที่ฝังอยู่ในภาพสแกนจะลบไม่ได้</div>
+      <input type="file" id="unwatermark-input" accept="application/pdf" />
+    </div>
+    <div id="unwatermark-body" style="display:none;">
+      <div class="fileinfo">
+        <div class="fileinfo-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="fileinfo-name" id="unwatermark-filename"></span>
+        </div>
+        <button class="btn secondary small" id="unwatermark-remove">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          ลบไฟล์นี้
+        </button>
+      </div>
+      <div class="rd-toolbar">
+        <div class="rd-pager">
+          <button type="button" class="btn secondary small" id="unwatermark-prev" aria-label="หน้าก่อน">‹</button>
+          <span id="unwatermark-pageinfo">หน้า 1 / 1</span>
+          <button type="button" class="btn secondary small" id="unwatermark-next" aria-label="หน้าถัดไป">›</button>
+        </div>
+      </div>
+      <div class="uw-compare">
+        <figure><figcaption>ก่อน</figcaption><canvas id="unwatermark-before"></canvas></figure>
+        <figure><figcaption>หลังลบ</figcaption><canvas id="unwatermark-after"></canvas></figure>
+      </div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ลายน้ำที่พบ</h3>
+        <div class="uw-groups" id="unwatermark-groups"><p class="rd-note" style="margin:0;">เลือกไฟล์เพื่อค้นหาลายน้ำ</p></div>
+        <div class="row">
+          <button class="btn" id="unwatermark-run" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg> ลบลายน้ำที่เลือกและสร้างไฟล์</button>
+        </div>
+        <div class="status" id="unwatermark-status"></div>
+        <div class="result" id="unwatermark-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="unwatermark-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="unwatermark-filename-input" />
+                <span class="filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="unwatermark-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
   <section class="panel" id="panel-pdfjpg">
     <div class="panel-head">
       <div class="panel-icon" aria-hidden="true">
@@ -1961,7 +2107,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261106d"></script>
+<script src="script.js?v=20261106e"></script>
 
 </body>
 </html>

@@ -1062,3 +1062,21 @@ nav.tabs-groups{gap:16px;}
 .pagecell.wm-thumb.off canvas{opacity:.45;}
 .pagecell.wm-thumb.off .num{color:var(--text-3);}
 .wm-thumb-check{position:absolute; top:6px; right:6px; width:18px; height:18px; margin:0; accent-color:var(--accent); cursor:pointer; background:#fff; border-radius:4px; box-shadow:0 0 0 2px #fff;}
+
+/* ---------- ลบหน้าว่าง ---------- */
+.bl-summary{font-size:14.5px; color:var(--text); margin:4px 0 2px;}
+.bl-grid.pagegrid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); max-height:520px; margin-top:10px;}
+.pagecell.bl-thumb{position:relative; cursor:pointer; font:inherit; color:inherit; text-align:center;}
+.pagecell.bl-thumb canvas{width:100%; height:auto;}
+.pagecell.bl-thumb.bl-remove{border-color:var(--danger); background:var(--danger-soft);}
+.pagecell.bl-thumb.bl-remove canvas{opacity:.55;}
+.bl-badge{display:none; position:absolute; top:8px; left:8px; background:var(--danger); color:#fff; font-size:11.5px; font-weight:600; border-radius:6px; padding:1px 7px;}
+.pagecell.bl-thumb.bl-remove .bl-badge{display:block;}
+.bl-ink{position:absolute; right:8px; bottom:26px; font-size:10.5px; color:var(--text-2); background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:0 5px;}
+/* ---------- ลบลายน้ำ ---------- */
+.uw-compare{display:grid; grid-template-columns:1fr 1fr; gap:14px; background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius); padding:14px;}
+.uw-compare figure{margin:0; display:flex; flex-direction:column; align-items:center; gap:6px; min-width:0;}
+.uw-compare figcaption{font-size:13px; font-weight:600; color:var(--text-2);}
+.uw-compare canvas{max-width:100%; height:auto; background:#fff; box-shadow:var(--shadow-lg); border-radius:4px;}
+.uw-groups{display:flex; flex-direction:column; gap:2px; margin-bottom:14px;}
+@media (max-width:640px){ .uw-compare{grid-template-columns:1fr;} }

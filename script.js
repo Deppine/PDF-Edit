@@ -2064,8 +2064,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       }
     }
 
-    return { attemptTrueTextRemoval, extractOriginalFontBytes };
+    return { attemptTrueTextRemoval, extractOriginalFontBytes, tokenize, walkTextPositions, getCombinedContentBytes };
   })();
+  window.LyraContentEditor = ContentEditor; // shared with "ลบลายน้ำ"
   let activeItem = null, activeDiv = null;
   let insertPos = null; // { x, yBaseline } in PDF page coords — set when the popover is open in "add new text" mode instead of "edit existing text" mode
   let addMode = false;
@@ -8668,4 +8669,528 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }
   };
   downloadBtn.onclick = ()=>{ if(outBlob) downloadBlob(outBlob, resolveFilename(filenameInput, outBase, outExt)); };
+})();
+
+/* ================= BLANK PAGES (ลบหน้าว่าง) =================
+   Renders every page small and measures how much "ink" it carries compared
+   with its own paper colour, so grey or yellowed scans still count as
+   blank, faint show-through from the back of the sheet is ignored, and the
+   outer margin (scanner edges, punch holes) is left out. Pages under the
+   chosen ink level are proposed for removal; the user can flip any page. */
+(function(){
+  const $ = id => document.getElementById(id);
+  const drop = $("blank-drop");
+  if(!drop) return;
+  const input = $("blank-input"), body = $("blank-body"), grid = $("blank-grid"), summary = $("blank-summary");
+  const sensSel = $("blank-sens"), keepAllBtn = $("blank-keepall"), redetectBtn = $("blank-redetect");
+  const runBtn = $("blank-run"), progress = $("blank-progress"), status = $("blank-status");
+  const result = $("blank-result"), downloadBtn = $("blank-download");
+  const filenameEl = $("blank-filename"), filenameInput = $("blank-filename-input"), removeBtn = $("blank-remove");
+
+  const ANALYSE_W = 420;   // px width used to measure ink (small marks must survive)
+  const THUMB_W = 110;
+  const MARGIN = 0.035;    // ignore this share of each edge (scanner shadow, punch holes)
+  let buffer = null, fileName = "document", outputBlob = null, loadSeq = 0;
+  let pages = [];          // [{ ink, chars, remove, cell }]
+
+  // share of the page (inside the margin) that is clearly darker than the paper
+  function inkRatio(canvas){
+    const ctx = canvas.getContext("2d");
+    const { width: w, height: h } = canvas;
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const x0 = Math.floor(w * MARGIN), x1 = Math.ceil(w * (1 - MARGIN));
+    const y0 = Math.floor(h * MARGIN), y1 = Math.ceil(h * (1 - MARGIN));
+    const hist = new Uint32Array(256);
+    let total = 0;
+    for(let y = y0; y < y1; y++) for(let x = x0; x < x1; x++){
+      const i = (y * w + x) * 4;
+      const l = (d[i] * 299 + d[i+1] * 587 + d[i+2] * 114) / 1000 | 0;
+      hist[l]++; total++;
+    }
+    // paper = the brightness 85% of pixels are darker than or equal to
+    let acc = 0, paper = 255;
+    for(let l = 0; l < 256; l++){ acc += hist[l]; if(acc >= total * 0.85){ paper = l; break; } }
+    const cut = Math.max(0, paper - 60);
+    let ink = 0;
+    for(let l = 0; l < cut; l++) ink += hist[l];
+    return total ? ink / total : 0;
+  }
+
+  function threshold(){ return parseFloat(sensSel.value) || 0.001; }
+  // a page with real text (not just a page number) is never "blank"
+  function isBlank(p){ return p.chars < 20 && p.ink < threshold(); }
+
+  function syncUI(){
+    let n = 0;
+    pages.forEach((p, i)=>{
+      if(p.remove) n++;
+      if(p.cell){
+        p.cell.classList.toggle("bl-remove", p.remove);
+        p.cell.setAttribute("aria-pressed", p.remove ? "true" : "false");
+        p.cell.title = `หน้า ${i + 1} · หมึก ${(p.ink * 100).toFixed(2)}%` + (p.remove ? " · จะถูกลบ (กดเพื่อเก็บไว้)" : " · เก็บไว้ (กดเพื่อลบ)");
+      }
+    });
+    const all = pages.length && n === pages.length;
+    summary.innerHTML = pages.length
+      ? (n ? `พบหน้าว่าง <b>${n}</b> หน้า จาก ${pages.length} หน้า` + (all ? " · ต้องเก็บไว้อย่างน้อย 1 หน้า" : "") : `ไม่พบหน้าว่าง · ทั้งหมด ${pages.length} หน้า`)
+      : "";
+    runBtn.disabled = !buffer || !n || all;
+    outputBlob = null; result.classList.remove("show");
+  }
+  function detect(){ pages.forEach(p => p.remove = isBlank(p)); syncUI(); }
+
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    const seq = ++loadSeq;
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    grid.innerHTML = ""; pages = [];
+    result.classList.remove("show");
+    progress.style.display = "block"; progress.value = 0;
+    let pjs = null;
+    try{
+      pjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      const n = pjs.numPages;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      for(let i = 1; i <= n; i++){
+        if(seq !== loadSeq) return;
+        setStatus(status, `กำลังตรวจหน้า ${i}/${n}...`, "loading");
+        const page = await pjs.getPage(i);
+        const base = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.max(ANALYSE_W, THUMB_W * dpr) / base.width });
+        const c = document.createElement("canvas");
+        c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        let chars = 0;
+        try{ chars = (await page.getTextContent()).items.map(t => t.str || "").join("").replace(/\s/g, "").length; }catch(e){}
+        const p = { ink: inkRatio(c), chars, remove: false };
+        const cell = document.createElement("button");
+        cell.type = "button"; cell.className = "pagecell bl-thumb";
+        c.className = "bl-canvas";
+        const num = document.createElement("div"); num.className = "num"; num.textContent = i;
+        const ink = document.createElement("span"); ink.className = "bl-ink"; ink.textContent = (p.ink * 100).toFixed(p.ink < 0.01 ? 2 : 1) + "%";
+        const badge = document.createElement("span"); badge.className = "bl-badge"; badge.textContent = "ลบ";
+        cell.append(c, badge, ink, num);
+        cell.onclick = ()=>{ p.remove = !p.remove; syncUI(); };
+        p.cell = cell;
+        pages.push(p);
+        p.remove = isBlank(p);
+        grid.appendChild(cell);
+        progress.value = Math.round((i / n) * 100);
+        page.cleanup();
+        if(i % 10 === 0) syncUI();
+      }
+      syncUI();
+      setStatus(status, "ตรวจเสร็จแล้ว · ดูรูปย่อก่อนกดลบ", "ok");
+    }catch(e){
+      buffer = null;
+      setStatus(status, "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+    }finally{
+      if(pjs) pjs.destroy();
+      progress.style.display = "none";
+      syncUI();
+    }
+  });
+
+  sensSel.addEventListener("change", detect);
+  redetectBtn.onclick = detect;
+  keepAllBtn.onclick = ()=>{ pages.forEach(p => p.remove = false); syncUI(); };
+
+  runBtn.onclick = async ()=>{
+    const keep = pages.map((p, i)=> p.remove ? -1 : i).filter(i => i >= 0);
+    if(!buffer || !keep.length || keep.length === pages.length) return;
+    runBtn.disabled = true;
+    setStatus(status, "กำลังสร้างไฟล์...", "loading");
+    try{
+      let src = await PDFDocument.load(buffer.slice(0), { ignoreEncryption: true });
+      ({ doc: src } = await autoDecryptIfNeeded(src, buffer));
+      const out = await PDFDocument.create();
+      (await out.copyPages(src, keep)).forEach(pg => out.addPage(pg));
+      const bytes = await out.save({ useObjectStreams: true });
+      outputBlob = new Blob([bytes], { type: "application/pdf" });
+      const removed = pages.length - keep.length;
+      const list = rangesToString(pages.map((p, i)=> p.remove ? i + 1 : 0).filter(Boolean));
+      result.querySelector(".stats").innerHTML = `ลบ <b>${removed}</b> หน้า (หน้า ${escapeHtml(list)}) · เหลือ <b>${keep.length}</b> หน้า · ${fmtBytes(outputBlob.size)}`;
+      setFilenameDefault(filenameInput, `${fileName}_no-blank`);
+      result.classList.add("show");
+      setStatus(status, "สำเร็จ", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      runBtn.disabled = false;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, `${fileName}_no-blank`, ".pdf")); };
+  removeBtn.onclick = ()=>{
+    loadSeq++;
+    buffer = null; outputBlob = null; pages = [];
+    grid.innerHTML = ""; summary.innerHTML = "";
+    body.style.display = "none"; input.value = "";
+    result.classList.remove("show"); progress.style.display = "none";
+    setStatus(status, "", "");
+    runBtn.disabled = true;
+  };
+})();
+
+/* ================= REMOVE WATERMARK (ลบลายน้ำ) =================
+   Finds watermarks that live in the PDF as separate objects and removes
+   only those objects — the rest of the page content is untouched:
+     • annotations of subtype /Watermark
+     • marked content tagged as a watermark (Acrobat, Word: /Artifact with
+       /Subtype /Watermark) or an optional-content layer named "Watermark"
+     • the same text drawn rotated, semi-transparent or very large on most
+       pages (this app's own "ใส่ลายน้ำ", most online tools)
+     • the same semi-transparent image drawn on most pages (logo watermarks)
+   A watermark baked into a scanned image cannot be separated and is left. */
+(function(){
+  const $ = id => document.getElementById(id);
+  const drop = $("unwatermark-drop");
+  if(!drop) return;
+  const input = $("unwatermark-input"), body = $("unwatermark-body");
+  const prevBtn = $("unwatermark-prev"), nextBtn = $("unwatermark-next"), pageInfo = $("unwatermark-pageinfo");
+  const beforeCanvas = $("unwatermark-before"), afterCanvas = $("unwatermark-after");
+  const groupsBox = $("unwatermark-groups"), runBtn = $("unwatermark-run"), status = $("unwatermark-status");
+  const result = $("unwatermark-result"), downloadBtn = $("unwatermark-download");
+  const filenameEl = $("unwatermark-filename"), filenameInput = $("unwatermark-filename-input"), removeBtn = $("unwatermark-remove");
+
+  let buffer = null, fileName = "document", outputBlob = null, loadSeq = 0;
+  let srcPjs = null, previewPjs = null, previewBytes = null;
+  let groups = [];            // [{ key, label, pages:Set, on }]
+  let textItems = [];         // pdf.js text items per page (for labels)
+  let numPages = 0, curPage = 1;
+
+  const latin = (bytes, s, e) => { let out = ""; for(let i = s; i < e; i++) out += String.fromCharCode(bytes[i]); return out; };
+  const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2, "0")).join("");
+  function pdfText(obj){
+    try{ if(!obj) return ""; if(obj.decodeText) return obj.decodeText(); return String(obj.asString ? obj.asString() : obj); }catch(e){ return ""; }
+  }
+
+  async function loadDoc(){
+    let doc = await PDFDocument.load(buffer.slice(0), { ignoreEncryption: true });
+    ({ doc } = await autoDecryptIfNeeded(doc, buffer));
+    return doc;
+  }
+
+  // Scan one loaded document. Returns per-page findings; the byte offsets
+  // refer to that page's combined content stream, which is identical every
+  // time the same file is loaded, so a later apply() can reuse the keys.
+  function analyse(doc){
+    const CE = window.LyraContentEditor;
+    const ctx = doc.context;
+    const pages = doc.getPages();
+    const perPage = [];
+    pages.forEach((page, pi)=>{
+      const found = { annots: [], ranges: [] };  // ranges: [{ key, start, end }]
+      perPage.push(found);
+      // 1. watermark annotations
+      try{
+        const annots = page.node.Annots();
+        if(annots) for(let i = 0; i < annots.size(); i++){
+          const a = ctx.lookup(annots.get(i));
+          const st = a && a.get && a.get(PDFName.of("Subtype"));
+          if(st && st.toString() === "/Watermark") found.annots.push({ key: "annot", index: i });
+        }
+      }catch(e){}
+      if(!CE) return;
+      let built = null;
+      try{ built = CE.getCombinedContentBytes(page, ctx); }catch(e){}
+      if(!built) return;
+      const bytes = built.combined;
+      let ops; try{ ops = CE.tokenize(bytes); }catch(e){ return; }
+      const res = page.node.Resources();
+      const lookupIn = (dictName, key)=>{
+        try{ const d = res && res.lookup(PDFName.of(dictName)); return d && d.lookup ? d.lookup(PDFName.of(key)) : null; }catch(e){ return null; }
+      };
+      const refOf = (dictName, key)=>{
+        try{ const d = res && res.lookup(PDFName.of(dictName)); const r = d && d.get(PDFName.of(key)); return r ? r.toString() : key; }catch(e){ return key; }
+      };
+      // 2. marked content + transparency tracking
+      const mc = [], alphaStack = [];
+      let alpha = 1, qDepth = 0;
+      const alphaAt = new Map();
+      for(const op of ops){
+        switch(op.name){
+          case "q": alphaStack.push(alpha); qDepth++; break;
+          case "Q": alpha = alphaStack.length ? alphaStack.pop() : 1; qDepth--; break;
+          case "gs": {
+            const g = op.args[0] && op.args[0].t === "name" ? lookupIn("ExtGState", op.args[0].v) : null;
+            if(g && g.get){
+              const ca = g.get(PDFName.of("ca")), CA = g.get(PDFName.of("CA"));
+              const v = [ca, CA].map(x => x && x.asNumber ? x.asNumber() : (x && x.numberValue != null ? x.numberValue : null)).filter(x => x != null);
+              if(v.length) alpha = Math.min(...v);
+            }
+            break;
+          }
+          case "BMC": mc.push({ start: op.opStart, wm: null, q: qDepth }); break;
+          case "BDC": {
+            const tag = op.args[0] && op.args[0].v, p = op.args[1];
+            let wm = null;
+            if(p && p.t === "raw"){
+              const txt = latin(bytes, p.start, p.end);
+              if(/\/Subtype\s*\/Watermark/.test(txt) || (tag === "Artifact" && /Watermark/i.test(txt))) wm = "mc-artifact";
+            }else if(p && p.t === "name"){
+              const d = lookupIn("Properties", p.v);
+              if(d && d.get){
+                if(tag === "OC"){
+                  const nm = pdfText(d.get(PDFName.of("Name")));
+                  if(/water\s*mark|ลายน้ำ/i.test(nm)) wm = "mc-ocg";
+                }else{
+                  const sub = d.get(PDFName.of("Subtype"));
+                  if(sub && sub.toString() === "/Watermark") wm = "mc-artifact";
+                }
+              }
+            }
+            mc.push({ start: op.opStart, wm, q: qDepth });
+            break;
+          }
+          case "EMC": {
+            const m = mc.pop();
+            // only cut a balanced section (same q depth at both ends)
+            if(m && m.wm && m.q === qDepth) found.ranges.push({ key: m.wm, start: m.start, end: op.opEnd });
+            break;
+          }
+          case "Do": {
+            if(alpha < 0.95 && op.args[0] && op.args[0].t === "name"){
+              const ref = refOf("XObject", op.args[0].v);
+              found.ranges.push({ key: "img:" + ref + ":" + alpha.toFixed(2), start: op.opStart, end: op.opEnd, cand: true });
+            }
+            break;
+          }
+          case "Tj": case "TJ": alphaAt.set(op.opStart, alpha); break;
+        }
+      }
+      // 3. text runs: describe each one so repeats across pages can be found
+      try{
+        const cands = CE.walkTextPositions(bytes);
+        const byOp = new Map();
+        cands.forEach(c=>{
+          if(c.op.name !== "Tj" && c.op.name !== "TJ") return;
+          const e = byOp.get(c.op.opStart) || { op: c.op, t: null, parts: [] };
+          if(!e.t && c.transform) e.t = c.transform;
+          e.parts.push(c.str.v);
+          byOp.set(c.op.opStart, e);
+        });
+        byOp.forEach(e=>{
+          if(!e.t) return;
+          const t = e.t;
+          const size = Math.hypot(t[0], t[1]);
+          const angle = ((Math.atan2(t[1], t[0]) * 180 / Math.PI) % 360 + 360) % 360;
+          const off90 = Math.min(...[0, 90, 180, 270, 360].map(a => Math.abs(angle - a)));
+          const a = alphaAt.has(e.op.opStart) ? alphaAt.get(e.op.opStart) : 1;
+          const total = e.parts.reduce((n, u)=> n + u.length, 0);
+          if(!total) return;
+          const joined = new Uint8Array(total); let k = 0; e.parts.forEach(u=>{ joined.set(u, k); k += u.length; });
+          const looksWm = off90 > 5 || a < 0.95 || size >= 28;
+          if(!looksWm) return;
+          // keyed by the text alone: this app (and others) scale and turn the
+          // watermark per page size and /Rotate, so size and angle vary
+          found.ranges.push({ key: "txt:" + hex(joined), start: e.op.opStart, end: e.op.opEnd, cand: true, t, size, angle, strong: off90 > 5 || a < 0.95 });
+        });
+      }catch(e){}
+    });
+    // keep repeated candidates only (a watermark is on most pages); a
+    // one-page file accepts a rotated/transparent run on its own
+    const count = new Map();
+    perPage.forEach(f => new Set(f.ranges.filter(r => r.cand).map(r => r.key)).forEach(k => count.set(k, (count.get(k) || 0) + 1)));
+    const need = pages.length === 1 ? 1 : Math.max(2, Math.ceil(pages.length * 0.6));
+    perPage.forEach(f=>{
+      const marked = f.ranges.filter(r => !r.cand);
+      f.ranges = f.ranges.filter(r => !r.cand || (
+        count.get(r.key) >= need && (pages.length > 1 || r.strong || r.key.startsWith("img:")) &&
+        !marked.some(m => r.start >= m.start && r.end <= m.end)));   // already inside a tagged watermark
+    });
+    return perPage;
+  }
+
+  function summarise(perPage){
+    const map = new Map();
+    perPage.forEach((f, pi)=>{
+      f.annots.forEach(a=>{ const g = map.get(a.key) || { key: a.key, pages: new Set(), first: null }; g.pages.add(pi + 1); map.set(a.key, g); });
+      f.ranges.forEach(r=>{ const g = map.get(r.key) || { key: r.key, pages: new Set(), first: null }; g.pages.add(pi + 1); if(!g.first) g.first = { pi, r }; map.set(r.key, g); });
+    });
+    return Array.from(map.values()).map(g=>{
+      let label;
+      if(g.key === "annot") label = "ลายน้ำแบบ Annotation";
+      else if(g.key === "mc-artifact") label = "ลายน้ำมาตรฐาน PDF (Acrobat, Word)";
+      else if(g.key === "mc-ocg") label = "เลเยอร์ลายน้ำ (Watermark layer)";
+      else if(g.key.startsWith("img:")) label = "รูปภาพโปร่งใสที่ซ้ำกันหลายหน้า";
+      else{
+        // name the text from pdf.js (the raw bytes are glyph codes)
+        let str = "";
+        if(g.first && g.first.r.t){
+          const t = g.first.r.t;
+          const ang = r => Math.atan2(r[1], r[0]) * 180 / Math.PI;
+          const sz = r => Math.hypot(r[0], r[1]);
+          let best = null, bd = Infinity;
+          (textItems[g.first.pi] || []).forEach(x=>{
+            if(!x.transform || !(x.str || "").trim()) return;
+            const da = Math.abs(((ang(x.transform) - ang(t)) % 360 + 540) % 360 - 180);
+            if(da > 3 || Math.abs(sz(x.transform) - sz(t)) > Math.max(2, sz(t) * 0.1)) return;
+            const d = Math.hypot(x.transform[4] - t[4], x.transform[5] - t[5]);
+            if(d < bd){ bd = d; best = x; }
+          });
+          if(best) str = best.str;
+        }
+        label = str ? `ข้อความ “${str.trim().slice(0, 40)}”` : "ข้อความลายน้ำ (หมุน/โปร่งใส/ตัวใหญ่)";
+      }
+      return { key: g.key, label, pages: g.pages, on: true };
+    });
+  }
+
+  // Build a copy of the document without the selected watermark groups.
+  async function apply(keys){
+    const doc = await loadDoc();
+    const perPage = analyse(doc);
+    const ctx = doc.context;
+    const CE = window.LyraContentEditor;
+    let removed = 0;
+    doc.getPages().forEach((page, pi)=>{
+      const f = perPage[pi];
+      // annotations (remove from the end so indices stay valid)
+      const ann = f.annots.filter(a => keys.has(a.key)).map(a => a.index).sort((a, b)=> b - a);
+      if(ann.length){
+        const arr = page.node.Annots();
+        ann.forEach(i => arr.remove(i));
+        removed += ann.length;
+      }
+      const cut = f.ranges.filter(r => keys.has(r.key)).map(r => [r.start, r.end]).sort((a, b)=> a[0] - b[0]);
+      if(!cut.length) return;
+      const merged = [];
+      cut.forEach(([s, e])=>{ const last = merged[merged.length - 1]; if(last && s <= last[1]) last[1] = Math.max(last[1], e); else merged.push([s, e]); });
+      const bytes = CE.getCombinedContentBytes(page, ctx).combined;
+      const keep = []; let pos = 0, len = 0;
+      merged.forEach(([s, e])=>{ keep.push(bytes.subarray(pos, s)); len += s - pos; pos = e; });
+      keep.push(bytes.subarray(pos)); len += bytes.length - pos;
+      const out = new Uint8Array(len); let k = 0;
+      keep.forEach(part=>{ out.set(part, k); k += part.length; });
+      page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(out)));
+      removed += merged.length;
+    });
+    return { bytes: await doc.save({ useObjectStreams: true }), removed };
+  }
+
+  /* ---------- preview ---------- */
+  async function renderInto(pjs, n, canvas){
+    const page = await pjs.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const wrapW = Math.max(150, Math.min(420, (canvas.parentElement.clientWidth || 300) - 4));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const vp = page.getViewport({ scale: (wrapW / base.width) * dpr });
+    canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height);
+    canvas.style.width = (vp.width / dpr) + "px";
+    const c = canvas.getContext("2d"); c.fillStyle = "#fff"; c.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: c, viewport: vp }).promise;
+  }
+  async function showPage(){
+    pageInfo.textContent = `หน้า ${curPage} / ${numPages}`;
+    prevBtn.disabled = curPage <= 1; nextBtn.disabled = curPage >= numPages;
+    if(srcPjs) await renderInto(srcPjs, curPage, beforeCanvas);
+    if(previewPjs) await renderInto(previewPjs, curPage, afterCanvas);
+  }
+  let rebuildSeq = 0;
+  async function rebuild(){
+    const my = ++rebuildSeq;
+    outputBlob = null; result.classList.remove("show");
+    const keys = new Set(groups.filter(g => g.on).map(g => g.key));
+    runBtn.disabled = !keys.size;
+    try{
+      const { bytes } = await apply(keys);
+      if(my !== rebuildSeq) return;
+      if(previewPjs){ try{ previewPjs.destroy(); }catch(e){} }
+      previewBytes = bytes;
+      previewPjs = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      await showPage();
+    }catch(e){
+      setStatus(status, "สร้างตัวอย่างไม่สำเร็จ: " + (e && e.message), "err");
+    }
+  }
+  function renderGroups(){
+    groupsBox.innerHTML = "";
+    if(!groups.length){
+      groupsBox.innerHTML = '<p class="rd-note" style="margin:0;">ไม่พบลายน้ำที่แยกออกได้ในไฟล์นี้ ถ้าลายน้ำเป็นส่วนหนึ่งของภาพสแกน จะลบไม่ได้โดยไม่ทำลายเนื้อหาเอกสาร</p>';
+      return;
+    }
+    groups.forEach(g=>{
+      const lab = document.createElement("label"); lab.className = "rd-cat";
+      const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = g.on;
+      chk.onchange = ()=>{ g.on = chk.checked; rebuild(); };
+      const txt = document.createElement("span"); txt.className = "rd-cat-text";
+      const pagesTxt = g.pages.size === numPages ? "ทุกหน้า" : "หน้า " + rangesToString(Array.from(g.pages));
+      txt.innerHTML = `<span class="rd-cat-label">${escapeHtml(g.label)}</span><span class="rd-cat-hint">${escapeHtml(pagesTxt)}</span>`;
+      lab.append(chk, txt); groupsBox.appendChild(lab);
+    });
+  }
+
+  /* ---------- load / run ---------- */
+  function cleanup(){
+    [srcPjs, previewPjs].forEach(d=>{ if(d){ try{ d.destroy(); }catch(e){} } });
+    srcPjs = previewPjs = null; previewBytes = null; groups = []; textItems = [];
+  }
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    const seq = ++loadSeq;
+    cleanup();
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    outputBlob = null; result.classList.remove("show");
+    setStatus(status, "กำลังค้นหาลายน้ำ...", "loading");
+    try{
+      srcPjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      numPages = srcPjs.numPages; curPage = 1;
+      for(let i = 1; i <= numPages; i++){
+        try{ textItems.push((await (await srcPjs.getPage(i)).getTextContent()).items); }catch(e){ textItems.push([]); }
+      }
+      if(seq !== loadSeq) return;
+      const doc = await loadDoc();
+      groups = summarise(analyse(doc));
+      renderGroups();
+      if(groups.length){
+        await rebuild();
+        setStatus(status, `พบลายน้ำ ${groups.length} แบบ · เทียบภาพก่อน-หลังด้านซ้ายก่อนกดลบ`, "ok");
+      }else{
+        await showPage();
+        afterCanvas.width = afterCanvas.height = 0;
+        runBtn.disabled = true;
+        setStatus(status, "ไม่พบลายน้ำที่ลบได้", "warn");
+      }
+    }catch(e){
+      buffer = null; cleanup(); renderGroups(); runBtn.disabled = true;
+      setStatus(status, "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+    }
+  });
+  prevBtn.onclick = ()=>{ if(curPage > 1){ curPage--; showPage(); } };
+  nextBtn.onclick = ()=>{ if(curPage < numPages){ curPage++; showPage(); } };
+
+  runBtn.onclick = async ()=>{
+    const keys = new Set(groups.filter(g => g.on).map(g => g.key));
+    if(!buffer || !keys.size) return;
+    runBtn.disabled = true;
+    setStatus(status, "กำลังลบลายน้ำ...", "loading");
+    try{
+      const { bytes, removed } = await apply(keys);
+      outputBlob = new Blob([bytes], { type: "application/pdf" });
+      result.querySelector(".stats").innerHTML = `ลบลายน้ำ <b>${groups.filter(g => g.on).length}</b> แบบ (${removed} จุด) · ${fmtBytes(outputBlob.size)}`;
+      setFilenameDefault(filenameInput, `${fileName}_no-watermark`);
+      result.classList.add("show");
+      setStatus(status, "สำเร็จ", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      runBtn.disabled = false;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, `${fileName}_no-watermark`, ".pdf")); };
+  removeBtn.onclick = ()=>{
+    loadSeq++; rebuildSeq++;
+    buffer = null; outputBlob = null; cleanup(); renderGroups();
+    body.style.display = "none"; input.value = "";
+    result.classList.remove("show"); setStatus(status, "", "");
+    runBtn.disabled = true;
+  };
 })();
