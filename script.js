@@ -110,7 +110,27 @@ const _escapeHtmlMap = { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, (c)=>_escapeHtmlMap[c]);
 }
+// Library errors (pdf.js / pdf-lib) arrive in English; menus append them to
+// their own Thai prefix. Swap the common ones for a Thai explanation the
+// user can act on, in one place for every menu.
+const FRIENDLY_ERRORS = [
+  [/No password given|PasswordException|password required|Incorrect Password/i, 'ไฟล์นี้ตั้งรหัสผ่านสำหรับเปิดไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน'],
+  [/Invalid PDF structure|No PDF header found|Failed to parse PDF document|Invalid XRef|InvalidPDFException/i, "ไฟล์นี้ไม่ใช่ PDF หรือไฟล์เสียหาย ลองเปิดด้วยโปรแกรมอ่าน PDF ดูก่อน"],
+  [/Missing PDF|Unexpected server response/i, "อ่านไฟล์ไม่ได้ ลองเลือกไฟล์ใหม่อีกครั้ง"],
+];
+function friendlyError(msg){
+  for(const [re, th] of FRIENDLY_ERRORS){
+    if(!re.test(msg)) continue;
+    // keep the menu's own Thai prefix ("เกิดข้อผิดพลาด", "ไม่สามารถอ่านไฟล์ x ได้"),
+    // replace the English library text that follows it
+    const idx = msg.search(/[:(（]\s*[A-Za-z]/);
+    const prefix = idx > 0 ? msg.slice(0, idx).trim() : "";
+    return prefix ? prefix + ": " + th : th;
+  }
+  return msg;
+}
 function setStatus(el, msg, kind){
+  if(kind === "err" && msg) msg = friendlyError(String(msg));
   el.className = "status" + (kind ? " " + kind : "");
   // msg is always treated as plain text (escaped) — only the loading spinner markup is trusted HTML.
   el.innerHTML = (kind === "loading" ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
@@ -176,13 +196,27 @@ function dedupeOcrLines(rawLines){
       const oy = Math.max(0, Math.min(cb.y1, kb.y1) - Math.max(cb.y0, kb.y0));
       const overlapArea = ox * oy;
       const kArea = Math.max(1, (kb.x1 - kb.x0) * (kb.y1 - kb.y0));
-      return overlapArea / Math.min(candArea, kArea) > 0.4;
+      // A ghost is the SAME physical line read twice, so it also sits at the
+      // same height. Thai line boxes are tall (marks above and below), so two
+      // neighbouring lines can overlap a lot without being duplicates — the
+      // centre check stops a real line from being dropped.
+      // Tesseract also sometimes returns a real line with a bloated box
+      // (stretching over the line above or a photo); a ghost has about the
+      // same height as the line it copies, so very different heights mean
+      // two different lines.
+      const hc = Math.max(1, cb.y1 - cb.y0), hk = Math.max(1, kb.y1 - kb.y0);
+      const minH = Math.min(hc, hk);
+      const sameRow = Math.abs((cb.y0 + cb.y1) / 2 - (kb.y0 + kb.y1) / 2) < minH * 0.35;
+      const sameHeight = Math.max(hc, hk) / minH < 1.6;
+      return sameRow && sameHeight && overlapArea / Math.min(candArea, kArea) > 0.4;
     });
     if(!isDuplicate) kept.push(cand);
   }
-  // Restore natural top-to-bottom, left-to-right reading order — the
-  // confidence sort above only decided who wins, not the output order.
-  kept.sort((a, b)=> (a.bbox.y0 - b.bbox.y0) || (a.bbox.x0 - b.bbox.x0));
+  // Restore Tesseract's own reading order (the order lines came in) — the
+  // confidence sort above only decided who wins. Re-sorting by box top
+  // misplaces a line whose box came back stretched upward.
+  const order = new Map(rawLines.map((l, i)=> [l, i]));
+  kept.sort((a, b)=> order.get(a) - order.get(b));
   return kept;
 }
 // pdf-lib does not actually support encrypted PDFs. `PDFDocument.load(..., {
@@ -230,8 +264,8 @@ async function autoDecryptIfNeeded(doc, rawBytes){
   }
   throw new Error('ไฟล์นี้มีการเข้ารหัส/ตั้งรหัสผ่านไว้ และระบบไม่สามารถปลดล็อกให้อัตโนมัติได้ กรุณาไปที่เมนู "ปลดล็อกรหัสผ่าน" เพื่อปลดล็อกไฟล์ก่อน แล้วนำไฟล์ที่ปลดล็อกแล้วมาใช้งานเมนูนี้อีกครั้ง');
 }
-async function renderPageCanvas(arrayBuffer, pageNum, targetWidth){
-  const doc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+async function renderPageCanvas(arrayBuffer, pageNum, targetWidth, docOpts){
+  const doc = await pdfjsLib.getDocument(Object.assign({ data: arrayBuffer.slice(0) }, docOpts || {})).promise;
   const page = await doc.getPage(pageNum);
   const baseViewport = page.getViewport({ scale: 1 });
   const scale = targetWidth / baseViewport.width;
@@ -322,9 +356,66 @@ function rangesToString(pages){
       const parentGroup = btn.closest(".tab-group");
       if(parentGroup) parentGroup.classList.add("active-group");
       closeAllGroups(null);
+      updateCrumb(btn);
+      if(sidebar && sidebar.classList.contains("nav-open")) setNavOpen(false);
+      const main = document.getElementById("main");
+      if(main && window.matchMedia("(max-width:900px)").matches) main.scrollIntoView({ block: "start" });
       document.dispatchEvent(new CustomEvent("pdftools:tabchange", { detail: { tab: btn.dataset.tab } }));
     });
   });
+
+  // Sidebar layout: "group › tool" breadcrumb above each tool's title
+  function updateCrumb(btn){
+    const crumb = document.getElementById("main-crumb");
+    if(!crumb || !btn) return;
+    const group = btn.closest(".tab-group");
+    const gl = group && group.querySelector(".group-label");
+    const tl = btn.querySelector(".tab-label");
+    crumb.textContent = (gl ? gl.textContent.trim() + "  ›  " : "") + (tl ? tl.textContent.trim() : "");
+  }
+  updateCrumb(nav.querySelector(".group-menu button[data-tab].active"));
+
+  // Phone/narrow screens: the tool list folds behind the ☰ button
+  const sidebar = document.getElementById("sidebar");
+  const navToggle = document.getElementById("nav-toggle");
+  function setNavOpen(open){
+    if(!sidebar) return;
+    sidebar.classList.toggle("nav-open", open);
+    if(navToggle) navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if(navToggle) navToggle.addEventListener("click", ()=> setNavOpen(!sidebar.classList.contains("nav-open")));
+
+  // Tool search: filter the sidebar list as you type; Enter opens the first match
+  const search = document.getElementById("tool-search");
+  if(search){
+    const norm = (s)=> String(s || "").toLowerCase().replace(/\s+/g, "");
+    let emptyMsg = null;
+    const visibleButtons = ()=> Array.from(nav.querySelectorAll(".group-menu button[data-tab]")).filter(b => !b.hidden);
+    search.addEventListener("input", ()=>{
+      const q = norm(search.value);
+      let any = false;
+      groups.forEach(g=>{
+        const gname = norm((g.querySelector(".group-label") || {}).textContent);
+        let groupHit = false;
+        g.querySelectorAll(".group-menu button[data-tab]").forEach(b=>{
+          const hit = !q || norm(b.textContent).indexOf(q) !== -1 || gname.indexOf(q) !== -1;
+          b.hidden = !hit;
+          if(hit) groupHit = true;
+        });
+        g.hidden = !groupHit;
+        if(groupHit) any = true;
+      });
+      if(!any){
+        if(!emptyMsg){ emptyMsg = document.createElement("div"); emptyMsg.className = "tool-search-empty"; nav.appendChild(emptyMsg); }
+        emptyMsg.textContent = "ไม่พบเครื่องมือที่ตรงกับ “" + search.value.trim() + "”";
+        emptyMsg.hidden = false;
+      }else if(emptyMsg){ emptyMsg.hidden = true; }
+    });
+    search.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter"){ const first = visibleButtons()[0]; if(first){ e.preventDefault(); first.click(); } }
+      if(e.key === "Escape"){ search.value = ""; search.dispatchEvent(new Event("input")); }
+    });
+  }
 })();
 
 /* ---------- generic drop-zone wiring ---------- */
@@ -712,6 +803,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let srcLib = await PDFDocument.load(buffer.slice(0), { ignoreEncryption:true });
       ({ doc: srcLib } = await autoDecryptIfNeeded(srcLib, buffer));
       const out = await PDFDocument.create();
+      out.registerFontkit(fontkit);
+      let textFont = null, hadText = false;
       const n = pdfjsDoc.numPages;
       for(let i=1;i<=n;i++){
         setStatus(status, `กำลังประมวลผลหน้า ${i}/${n}...`, "loading");
@@ -725,22 +818,57 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         const jpgUrl = canvas.toDataURL("image/jpeg", quality);
         const jpgBytes = Uint8Array.from(atob(jpgUrl.split(",")[1]), c=>c.charCodeAt(0));
         const jpgImage = await out.embedJpg(jpgBytes);
-        const origPage = srcLib.getPage(i-1);
-        const { width, height } = origPage.getSize();
+        // the render is upright (pdf.js applies /Rotate), so the new page
+        // takes the as-displayed size — the raw box would stretch a rotated page
+        const base = page.getViewport({ scale: 1 });
+        const width = base.width, height = base.height;
         const newPage = out.addPage([width, height]);
         newPage.drawImage(jpgImage, { x:0, y:0, width, height });
+        // keep the document searchable: put the page's text back as an
+        // invisible layer over the image
+        try{
+          const tc = await page.getTextContent();
+          for(const it of tc.items){
+            const str = (it.str || "").trim();
+            if(!str || !it.transform) continue;
+            if(!textFont) textFont = await out.embedFont(ocrFontBytes(), { subset: true });
+            hadText = true;
+            const tx = it.transform, fs = Math.hypot(tx[2], tx[3]) || 10;
+            const r = base.convertToViewportRectangle([tx[4], tx[5] - fs * 0.25, tx[4] + (it.width || fs), tx[5] + fs]);
+            const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]), yb = Math.max(r[1], r[3]), hh = Math.abs(r[3] - r[1]);
+            let size = Math.max(1, hh * 0.8);
+            try{
+              const mw = textFont.widthOfTextAtSize(str, size);
+              if(mw > 0) size = Math.max(1, size * Math.max(0.4, Math.min(2.5, (x1 - x0) / mw)));
+              newPage.drawText(str, { x: x0, y: height - yb + hh * 0.2, size, font: textFont, opacity: 0 });
+            }catch(e){ /* a glyph the font can't encode */ }
+          }
+        }catch(e){}
         progress.value = Math.round((i/n)*100);
         await new Promise(r=>setTimeout(r,0));
       }
-      const bytes = await out.save();
-      outputBlob = new Blob([bytes], { type:"application/pdf" });
-      const pct = Math.round((1 - outputBlob.size/originalSize) * 100);
-      result.querySelector(".stats").innerHTML =
-        `<b>${fmtBytes(originalSize)}</b> → <b>${fmtBytes(outputBlob.size)}</b>` +
-        (pct > 0 ? ` (ลดลง ${pct}%)` : ` (ไฟล์ใหญ่ขึ้น — ลองลดความละเอียด/คุณภาพ)`);
-      setFilenameDefault(filenameInput, `${fileName}_compressed`);
-      result.classList.add("show");
-      setStatus(status, "บีบอัดสำเร็จ", "ok");
+      const rasterBytes = await out.save({ useObjectStreams: true });
+      // A text-only PDF is usually smaller kept as vectors: also try a plain
+      // re-save (structure compressed, nothing re-rendered) and keep the smaller.
+      let losslessBytes = null;
+      try{ losslessBytes = await srcLib.save({ useObjectStreams: true }); }catch(e){}
+      let bytes = rasterBytes, method = "raster";
+      if(losslessBytes && losslessBytes.length <= rasterBytes.length){ bytes = losslessBytes; method = "lossless"; }
+      if(bytes.length >= originalSize){
+        outputBlob = null;
+        result.classList.remove("show");
+        setStatus(status, `ไฟล์นี้เล็กที่สุดแล้ว (${fmtBytes(originalSize)}) บีบอัดเพิ่มไม่ได้ ไม่ต้องดาวน์โหลดไฟล์ใหม่`, "warn");
+      }else{
+        outputBlob = new Blob([bytes], { type:"application/pdf" });
+        const pct = Math.round((1 - outputBlob.size/originalSize) * 100);
+        result.querySelector(".stats").innerHTML =
+          `<b>${fmtBytes(originalSize)}</b> → <b>${fmtBytes(outputBlob.size)}</b> (ลดลง ${pct}%)`;
+        setFilenameDefault(filenameInput, `${fileName}_compressed`);
+        result.classList.add("show");
+        setStatus(status, method === "lossless"
+          ? "บีบอัดสำเร็จ · ไฟล์นี้เป็นข้อความเป็นหลัก จึงบีบอัดโดยไม่แปลงเป็นภาพ คุณภาพเท่าเดิม"
+          : (hadText ? "บีบอัดสำเร็จ · ข้อความในไฟล์ยังค้นหาและคัดลอกได้" : "บีบอัดสำเร็จ"), "ok");
+      }
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
     }
@@ -847,15 +975,27 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       pages.forEach((page, idx)=>{
         const n = start + idx;
         const text = renderTemplate(template, n, total);
-        const { width, height } = page.getSize();
+        // Work in the page as it is DISPLAYED (/Rotate applied, visible crop
+        // box), then map back to raw page space — otherwise a rotated page
+        // gets its number sideways on the wrong edge.
+        const box = page.getCropBox();
+        const W = box.width, H = box.height, ox = box.x, oy = box.y;
+        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360;
+        const swapped = angle === 90 || angle === 270;
+        const Wv = swapped ? H : W, Hv = swapped ? W : H;
         const textWidth = font.widthOfTextAtSize(text, size);
-        let x, y;
+        let vx, vy;
         const pos = posSel.value;
-        if(pos.endsWith("center")) x = width/2 - textWidth/2;
-        else if(pos.endsWith("right")) x = width - margin - textWidth;
-        else x = margin;
-        y = pos.startsWith("top") ? height - margin : margin - size*0.3;
-        page.drawText(text, { x, y, size, font, color: rgb(0.25,0.25,0.28) });
+        if(pos.endsWith("center")) vx = Wv/2 - textWidth/2;
+        else if(pos.endsWith("right")) vx = Wv - margin - textWidth;
+        else vx = margin;
+        vy = pos.startsWith("top") ? Hv - margin : margin - size*0.3;
+        let x, y;
+        if(angle === 90){ x = W - vy; y = vx; }
+        else if(angle === 180){ x = W - vx; y = H - vy; }
+        else if(angle === 270){ x = vy; y = H - vx; }
+        else { x = vx; y = vy; }
+        page.drawText(text, { x: x + ox, y: y + oy, size, font, color: rgb(0.25,0.25,0.28), rotate: degrees(angle) });
       });
       const bytes = await doc.save();
       outputBlob = new Blob([bytes], { type:"application/pdf" });
@@ -881,115 +1021,227 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
 
 /* ================= WATERMARK ================= */
 (function(){
-  const drop = document.getElementById("watermark-drop");
-  const input = document.getElementById("watermark-input");
-  const body = document.getElementById("watermark-body");
-  const textInput = document.getElementById("watermark-text");
-  const colorInput = document.getElementById("watermark-color");
-  const sizeRange = document.getElementById("watermark-size");
-  const sizeVal = document.getElementById("watermark-size-val");
-  const opRange = document.getElementById("watermark-opacity");
-  const opVal = document.getElementById("watermark-opacity-val");
-  const rotRange = document.getElementById("watermark-rotate");
-  const rotVal = document.getElementById("watermark-rotate-val");
-  const runBtn = document.getElementById("watermark-run");
-  const status = document.getElementById("watermark-status");
-  const result = document.getElementById("watermark-result");
-  const downloadBtn = document.getElementById("watermark-download");
-  const filenameEl = document.getElementById("watermark-filename");
-  const filenameInput = document.getElementById("watermark-filename-input");
-  const removeBtn = document.getElementById("watermark-remove");
-  const previewPlaceholder = document.getElementById("watermark-preview-placeholder");
-  const previewCanvas = document.getElementById("watermark-preview");
-  const previewHint = document.getElementById("watermark-preview-hint");
-  const resetPosBtn = document.getElementById("watermark-reset-pos");
-  const positionModeGroup = document.getElementById("watermark-position-mode");
+  const $ = id => document.getElementById(id);
+  const drop = $("watermark-drop");
+  const input = $("watermark-input");
+  const body = $("watermark-body");
+  const textInput = $("watermark-text");
+  const colorInput = $("watermark-color");
+  const sizeRange = $("watermark-size");
+  const sizeVal = $("watermark-size-val");
+  const opRange = $("watermark-opacity");
+  const opVal = $("watermark-opacity-val");
+  const rotRange = $("watermark-rotate");
+  const rotVal = $("watermark-rotate-val");
+  const runBtn = $("watermark-run");
+  const status = $("watermark-status");
+  const result = $("watermark-result");
+  const downloadBtn = $("watermark-download");
+  const filenameEl = $("watermark-filename");
+  const filenameInput = $("watermark-filename-input");
+  const removeBtn = $("watermark-remove");
+  const previewPlaceholder = $("watermark-preview-placeholder");
+  const previewCanvas = $("watermark-preview");
+  const previewHint = $("watermark-preview-hint");
+  const resetPosBtn = $("watermark-reset-pos");
+  const positionModeGroup = $("watermark-position-mode");
   const positionModeBtns = positionModeGroup ? Array.from(positionModeGroup.querySelectorAll(".chip")) : [];
+  const pagesBox = $("watermark-pages");
+  const grid = $("watermark-grid");
+  const rangeInput = $("watermark-range");
+  const allBtn = $("watermark-all");
+  const noneBtn = $("watermark-none");
+  const scalePagesChk = $("watermark-scale-pages");
+
+  const PREVIEW_W = 440;   // CSS px width of the large preview
+  const THUMB_W = 110;     // CSS px width of a thumbnail
   let buffer = null, fileName = "document", outputBlob = null;
-  let basePageCanvas = null, pageScale = 1;
+  let pjs = null, loadSeq = 0;
+  // per page: visual (as displayed, /Rotate applied) size in points, and the
+  // rendered thumbnail once it has scrolled into view
+  let pages = [];          // [{ w, h, thumbBase: canvas|null, cell, canvas, check }]
+  let selected = new Set();
+  let current = 1;         // page shown large
+  let bigBase = null, bigScale = 1;
   // Where the user dragged the watermark to, as a fraction of the page (0-1,
-  // y measured from the TOP like canvas space) — null means "not moved yet",
-  // in which case the watermark stays auto-centered (horizontally centered
-  // on its own text width, vertically on the page) exactly as before this
-  // feature existed. Kept across text/size/color/rotation changes (the user
-  // chose a spot; tweaking the wording shouldn't un-choose it), but reset
-  // whenever a different file is loaded or the mode is switched back to
-  // "auto" — that switch is the deliberate "just fix it in the center, I
-  // don't want to think about this" choice, so it should actually put the
-  // watermark back there, not just hide the controls while leaving a stray
-  // drag position in effect.
+  // y measured from the TOP like canvas space) — null means auto-centered.
+  // The same fractions apply to every page. Reset when a new file loads or
+  // the mode goes back to "auto".
   let customPos = null;
-  // "auto" = always centered, dragging disabled (the safe default for anyone
-  // who doesn't want to fuss with placement — nothing they do on the preview
-  // can nudge it off-center by accident). "custom" = drag-to-position, as
-  // built earlier. A plain two-way toggle rather than leaving dragging
-  // always-on everywhere: an accidental click/drag on the preview used to
-  // silently move the watermark even for people who never meant to touch
-  // it, which is exactly the footgun this mode switch removes.
+  // "auto" = always centered, dragging disabled; "custom" = drag to position.
   let positionMode = "auto";
 
-  function applyPositionModeUI(){
-    positionModeBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.mode === positionMode));
-    const customActive = positionMode === "custom" && !!basePageCanvas;
-    previewCanvas.classList.toggle("draggable", customActive);
-    if(previewHint) previewHint.style.display = customActive ? "flex" : "none";
+  /* ---------- geometry shared by preview and export ---------- */
+  // Size of the watermark on a page. The slider is in points for a page the
+  // size of page 1; with "scale by page" on, other pages scale by their
+  // shorter side, so A4 landscape matches A4 portrait and A3 gets ~1.41x.
+  function sizeScaleFor(w, h){
+    if(!scalePagesChk.checked || !pages.length) return 1;
+    const ref = Math.min(pages[0].w, pages[0].h) || 1;
+    return Math.min(w, h) / ref;
   }
-
-  function drawPreview(){
-    if(!basePageCanvas) return;
-    const ctx = previewCanvas.getContext("2d");
-    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    ctx.drawImage(basePageCanvas, 0, 0);
-    const text = textInput.value || "WATERMARK";
-    const sizePt = parseFloat(sizeRange.value) || 48;
-    const opacity = (parseInt(opRange.value, 10) || 0) / 100;
-    const rotation = parseFloat(rotRange.value) || 0;
-    const color = colorInput.value || "#808080";
-    const fontPx = sizePt * pageScale;
+  function settings(){
+    return {
+      text: textInput.value || "WATERMARK",
+      sizePt: parseFloat(sizeRange.value) || 48,
+      opacity: (parseInt(opRange.value, 10) || 0) / 100,
+      rotation: parseFloat(rotRange.value) || 0,
+      color: colorInput.value || "#808080",
+    };
+  }
+  // Paint the watermark over a page image. pxPerPt = canvas px per point.
+  function paintWatermark(ctx, cw, ch, pxPerPt, pageW, pageH){
+    const st = settings();
+    const fontPx = st.sizePt * sizeScaleFor(pageW, pageH) * pxPerPt;
     ctx.save();
     ctx.font = `${fontPx}px "Noto Sans Thai","Leelawadee UI","Tahoma",sans-serif`;
     ctx.textBaseline = "alphabetic";
-    const textWidthPx = ctx.measureText(text).width;
-    const cax = customPos ? customPos.fracX * previewCanvas.width : previewCanvas.width / 2 - textWidthPx / 2;
-    const cay = customPos ? customPos.fracY * previewCanvas.height : previewCanvas.height / 2;
-    ctx.translate(cax, cay);
-    ctx.rotate(-rotation * Math.PI / 180);
-    ctx.globalAlpha = opacity;
-    ctx.fillStyle = color;
-    ctx.fillText(text, 0, 0);
+    const tw = ctx.measureText(st.text).width;
+    const ax = customPos ? customPos.fracX * cw : cw / 2 - tw / 2;
+    const ay = customPos ? customPos.fracY * ch : ch / 2;
+    ctx.translate(ax, ay);
+    ctx.rotate(-st.rotation * Math.PI / 180);
+    ctx.globalAlpha = st.opacity;
+    ctx.fillStyle = st.color;
+    ctx.fillText(st.text, 0, 0);
     ctx.restore();
   }
 
-  function resetPreview(){
-    basePageCanvas = null;
-    customPos = null;
-    positionMode = "auto";
-    previewCanvas.style.display = "none";
-    previewPlaceholder.style.display = "flex";
+  /* ---------- large preview ---------- */
+  function applyPositionModeUI(){
+    positionModeBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.mode === positionMode));
+    const customActive = positionMode === "custom" && !!bigBase;
+    previewCanvas.classList.toggle("draggable", customActive);
+    if(previewHint) previewHint.style.display = customActive ? "flex" : "none";
+  }
+  function drawBig(){
+    if(!bigBase) return;
+    const ctx = previewCanvas.getContext("2d");
+    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    ctx.drawImage(bigBase, 0, 0);
+    const pg = pages[current - 1];
+    if(selected.has(current)) paintWatermark(ctx, previewCanvas.width, previewCanvas.height, bigScale, pg.w, pg.h);
+    previewCanvas.classList.toggle("wm-off", !selected.has(current));
+    previewCanvas.title = selected.has(current) ? `หน้า ${current}` : `หน้า ${current} (ไม่ได้เลือกใส่ลายน้ำ)`;
+  }
+  let bigSeq = 0;
+  async function showPage(n){
+    if(!pjs) return;
+    current = n;
+    const my = ++bigSeq;
+    const page = await pjs.getPage(n);
+    if(my !== bigSeq) return;
+    const base = page.getViewport({ scale: 1 });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const scale = (PREVIEW_W / base.width) * dpr;
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    if(my !== bigSeq) return;
+    bigBase = c; bigScale = scale;
+    previewCanvas.width = c.width; previewCanvas.height = c.height;
+    previewCanvas.style.width = (c.width / dpr) + "px";
+    previewPlaceholder.style.display = "none";
+    previewCanvas.style.display = "block";
+    pages.forEach((p, i)=> p.cell && p.cell.classList.toggle("current", i + 1 === n));
     applyPositionModeUI();
+    drawBig();
   }
 
-  // Drag-to-reposition directly on the preview canvas — only live in "custom"
-  // mode (see positionMode above). Wherever the pointer is becomes the
-  // watermark's new anchor point, in real time (pointer events cover both
-  // mouse and touch). A single click also counts as a one-step "move it
-  // here" — no separate click-vs-drag distinction needed since there's
-  // nothing else on this canvas to click.
+  /* ---------- thumbnails (rendered when scrolled into view) ---------- */
+  let io = null;
+  function drawThumb(i){
+    const p = pages[i];
+    if(!p || !p.thumbBase) return;
+    const ctx = p.canvas.getContext("2d");
+    ctx.clearRect(0, 0, p.canvas.width, p.canvas.height);
+    ctx.drawImage(p.thumbBase, 0, 0);
+    if(selected.has(i + 1)) paintWatermark(ctx, p.canvas.width, p.canvas.height, p.thumbBase.width / p.w, p.w, p.h);
+  }
+  async function renderThumb(i, seq){
+    const p = pages[i];
+    if(!p || p.thumbBase || p.rendering || !pjs) return;
+    p.rendering = true;
+    try{
+      const page = await pjs.getPage(i + 1);
+      if(seq !== loadSeq) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const vp = page.getViewport({ scale: (THUMB_W / p.w) * dpr });
+      const c = document.createElement("canvas");
+      c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+      const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      if(seq !== loadSeq) return;
+      p.thumbBase = c;
+      p.canvas.width = c.width; p.canvas.height = c.height;
+      drawThumb(i);
+      page.cleanup();
+    }catch(e){ /* leave the placeholder */ }
+    finally{ p.rendering = false; }
+  }
+  function buildGrid(seq){
+    grid.innerHTML = "";
+    if(io) io.disconnect();
+    io = new IntersectionObserver(entries=>{
+      entries.forEach(en=>{ if(en.isIntersecting){ io.unobserve(en.target); renderThumb(+en.target.dataset.i, seq); } });
+    }, { root: grid, rootMargin: "200px" });
+    pages.forEach((p, i)=>{
+      const cell = document.createElement("div");
+      cell.className = "pagecell wm-thumb";
+      cell.dataset.i = i;
+      const canvas = document.createElement("canvas");
+      // placeholder with the page's own proportions until it renders
+      canvas.width = THUMB_W; canvas.height = Math.round(THUMB_W * p.h / p.w);
+      const chk = document.createElement("input");
+      chk.type = "checkbox"; chk.className = "wm-thumb-check";
+      chk.setAttribute("aria-label", `ใส่ลายน้ำหน้า ${i + 1}`);
+      chk.addEventListener("click", e => e.stopPropagation());
+      chk.addEventListener("change", ()=>{
+        if(chk.checked) selected.add(i + 1); else selected.delete(i + 1);
+        rangeInput.value = rangesToString(Array.from(selected));
+        syncSelectionUI();
+      });
+      const num = document.createElement("div");
+      num.className = "num"; num.textContent = i + 1;
+      cell.append(canvas, chk, num);
+      cell.addEventListener("click", ()=> showPage(i + 1));
+      p.cell = cell; p.canvas = canvas; p.check = chk;
+      grid.appendChild(cell);
+      io.observe(cell);
+    });
+  }
+  function syncSelectionUI(){
+    pages.forEach((p, i)=>{
+      const on = selected.has(i + 1);
+      if(p.check) p.check.checked = on;
+      if(p.cell) p.cell.classList.toggle("off", !on);
+      drawThumb(i);
+    });
+    drawBig();
+    runBtn.disabled = !buffer || selected.size === 0;
+    clearResult();
+  }
+  function redrawAll(){
+    drawBig();
+    pages.forEach((_, i)=> drawThumb(i));
+    clearResult();
+  }
+  function clearResult(){ outputBlob = null; result.classList.remove("show"); }
+
+  /* ---------- drag to position (custom mode) ---------- */
   function setPosFromEvent(e){
     const rect = previewCanvas.getBoundingClientRect();
     if(!rect.width || !rect.height) return;
-    const scaleX = previewCanvas.width / rect.width;
-    const scaleY = previewCanvas.height / rect.height;
-    const px = (e.clientX - rect.left) * scaleX;
-    const py = (e.clientY - rect.top) * scaleY;
     customPos = {
-      fracX: Math.max(0, Math.min(1, px / previewCanvas.width)),
-      fracY: Math.max(0, Math.min(1, py / previewCanvas.height)),
+      fracX: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      fracY: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
     };
-    drawPreview();
+    drawBig();
   }
   previewCanvas.addEventListener("pointerdown", (e)=>{
-    if(!basePageCanvas || positionMode !== "custom") return;
+    if(!bigBase || positionMode !== "custom") return;
     previewCanvas.setPointerCapture(e.pointerId);
     previewCanvas.classList.add("dragging");
     setPosFromEvent(e);
@@ -998,50 +1250,87 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(!previewCanvas.classList.contains("dragging")) return;
     setPosFromEvent(e);
   });
-  function endWatermarkDrag(){ previewCanvas.classList.remove("dragging"); }
+  function endWatermarkDrag(){
+    if(!previewCanvas.classList.contains("dragging")) return;
+    previewCanvas.classList.remove("dragging");
+    redrawAll(); // thumbnails follow once the drag ends
+  }
   previewCanvas.addEventListener("pointerup", endWatermarkDrag);
   previewCanvas.addEventListener("pointercancel", endWatermarkDrag);
-  if(resetPosBtn){
-    resetPosBtn.addEventListener("click", ()=>{ customPos = null; drawPreview(); });
-  }
+  if(resetPosBtn) resetPosBtn.addEventListener("click", ()=>{ customPos = null; redrawAll(); });
   positionModeBtns.forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const mode = btn.dataset.mode === "custom" ? "custom" : "auto";
       if(mode === positionMode) return;
       positionMode = mode;
-      if(positionMode === "auto") customPos = null; // "fix it centered" should actually re-center, not just hide the controls
+      if(positionMode === "auto") customPos = null;
       applyPositionModeUI();
-      drawPreview();
+      redrawAll();
     });
   });
 
-  sizeRange.addEventListener("input", ()=>{ sizeVal.textContent = sizeRange.value; drawPreview(); });
-  opRange.addEventListener("input", ()=>{ opVal.textContent = opRange.value + "%"; drawPreview(); });
-  rotRange.addEventListener("input", ()=>{ rotVal.textContent = rotRange.value + "°"; drawPreview(); });
-  textInput.addEventListener("input", drawPreview);
-  colorInput.addEventListener("input", drawPreview);
+  // live controls: the large preview follows every input event; thumbnails
+  // are batched to one redraw per frame so a long document stays smooth
+  let thumbRaf = 0;
+  function liveRedraw(){
+    drawBig(); clearResult();
+    if(!thumbRaf) thumbRaf = requestAnimationFrame(()=>{ thumbRaf = 0; pages.forEach((_, i)=> drawThumb(i)); });
+  }
+  sizeRange.addEventListener("input", ()=>{ sizeVal.textContent = sizeRange.value; liveRedraw(); });
+  opRange.addEventListener("input", ()=>{ opVal.textContent = opRange.value + "%"; liveRedraw(); });
+  rotRange.addEventListener("input", ()=>{ rotVal.textContent = rotRange.value + "°"; liveRedraw(); });
+  textInput.addEventListener("input", liveRedraw);
+  colorInput.addEventListener("input", liveRedraw);
+  scalePagesChk.addEventListener("change", liveRedraw);
 
+  rangeInput.addEventListener("input", ()=>{ selected = new Set(parseRanges(rangeInput.value, pages.length)); syncSelectionUI(); });
+  allBtn.onclick = ()=>{ selected = new Set(pages.map((_, i)=> i + 1)); rangeInput.value = rangesToString(Array.from(selected)); syncSelectionUI(); };
+  noneBtn.onclick = ()=>{ selected = new Set(); rangeInput.value = ""; syncSelectionUI(); };
+
+  /* ---------- load ---------- */
+  function resetPreview(){
+    bigBase = null; customPos = null; positionMode = "auto";
+    previewCanvas.style.display = "none";
+    previewPlaceholder.style.display = "flex";
+    pagesBox.hidden = true; grid.innerHTML = ""; pages = []; selected = new Set();
+    if(io){ io.disconnect(); io = null; }
+    if(pjs){ try{ pjs.destroy(); }catch(e){} pjs = null; }
+    applyPositionModeUI();
+  }
   wireDrop(drop, input, async (files)=>{
     const file = files[0];
-    fileName = file.name.replace(/\.pdf$/i,"");
+    const seq = ++loadSeq;
+    resetPreview();
+    fileName = file.name.replace(/\.pdf$/i, "");
     buffer = await readFileAsArrayBuffer(file);
     filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
     body.style.display = "block";
-    result.classList.remove("show");
-    setStatus(status, "", "");
-    customPos = null; // new document → start back at the auto-centered default
-    positionMode = "auto";
+    clearResult();
+    setStatus(status, "กำลังโหลดหน้าเอกสาร...", "loading");
     try{
-      const { canvas: baseCanvas, scale } = await renderPageCanvas(buffer, 1, 220);
-      basePageCanvas = baseCanvas;
-      pageScale = scale;
-      previewCanvas.width = baseCanvas.width;
-      previewCanvas.height = baseCanvas.height;
-      previewPlaceholder.style.display = "none";
-      previewCanvas.style.display = "block";
-      applyPositionModeUI();
-      drawPreview();
-    }catch(e){ resetPreview(); }
+      pjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      if(seq !== loadSeq) return;
+      const list = [];
+      for(let i = 1; i <= pjs.numPages; i++){
+        const vp = (await pjs.getPage(i)).getViewport({ scale: 1 });
+        list.push({ w: vp.width, h: vp.height, thumbBase: null });
+      }
+      if(seq !== loadSeq) return;
+      pages = list;
+      selected = new Set(pages.map((_, i)=> i + 1));
+      rangeInput.value = pages.length ? `1-${pages.length}` : "";
+      pagesBox.hidden = false;
+      buildGrid(seq);
+      syncSelectionUI();
+      await showPage(1);
+      const odd = pages.some(p => Math.abs(Math.min(p.w, p.h) - Math.min(pages[0].w, pages[0].h)) > 2 || (p.w > p.h) !== (pages[0].w > pages[0].h));
+      setStatus(status, `โหลดสำเร็จ · ${pages.length} หน้า` + (odd ? " · มีหน้าที่ขนาดหรือแนวต่างจากหน้าแรก ตรวจดูในรูปย่อด้านล่างได้" : ""), odd ? "warn" : "ok");
+    }catch(e){
+      buffer = null;
+      resetPreview();
+      setStatus(status, (e && e.name === "PasswordException") ? 'ไฟล์นี้ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน' : "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+      runBtn.disabled = true;
+    }
   });
 
   function hexToRgb01(hex){
@@ -1049,8 +1338,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return { r: ((v>>16)&255)/255, g: ((v>>8)&255)/255, b: (v&255)/255 };
   }
 
+  /* ---------- export ---------- */
   runBtn.onclick = async ()=>{
-    if(!buffer) return;
+    if(!buffer || !selected.size) return;
     runBtn.disabled = true;
     setStatus(status, "กำลังใส่ลายน้ำ...", "loading");
     try{
@@ -1058,75 +1348,43 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       ({ doc } = await autoDecryptIfNeeded(doc, buffer));
       doc.registerFontkit(fontkit);
       const font = await doc.embedFont(thaiFontBytes(), { subset: true });
-      const text = textInput.value || "WATERMARK";
-      const size = parseFloat(sizeRange.value);
-      const opacity = parseInt(opRange.value,10) / 100;
-      const rotation = parseFloat(rotRange.value);
-      const { r,g,b } = hexToRgb01(colorInput.value);
-      const textWidth = font.widthOfTextAtSize(text, size);
-      doc.getPages().forEach(page=>{
-        // page.getSize() returns the RAW page box, ignoring any /Rotate the
-        // page carries — but the preview was built from pdf.js, which DOES
-        // render pages according to their /Rotate (so a portrait-looking
-        // scanned invoice whose raw box is actually landscape-with-Rotate-90
-        // still previews upright). If we naively drew at (raw width/2,
-        // raw height/2) with the plain slider rotation on such a page, a
-        // PDF viewer applying that same /Rotate on display would end up
-        // showing the watermark at the wrong spot, size-relative-position,
-        // and angle — exactly the "preview vs. exported file don't match"
-        // symptom. So: compute the position/rotation in the same VISUAL
-        // (as-displayed) space the preview used, then transform back into
-        // the page's raw, pre-rotation coordinate space before calling
-        // drawText, which always operates in raw space regardless of
-        // /Rotate.
+      const st = settings();
+      const { r,g,b } = hexToRgb01(st.color);
+      let done = 0;
+      doc.getPages().forEach((page, idx)=>{
+        if(!selected.has(idx + 1)) return;
+        // page.getSize() is the RAW box, ignoring /Rotate, while the preview
+        // (pdf.js) shows pages as displayed. Compute in that visual space,
+        // then map back to raw space for drawText.
         const { width: W, height: H } = page.getSize();
-        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360; // normalize to 0/90/180/270
+        const angle = ((Math.round(page.getRotation().angle) % 360) + 360) % 360;
         const swapped = angle === 90 || angle === 270;
-        const Wv = swapped ? H : W, Hv = swapped ? W : H; // visual (as-displayed) page dimensions
-
-        // customPos.fracY is measured from the top like canvas space (where
-        // it was captured while dragging on the preview, itself built in
-        // this same visual space); flipped here since PDF y grows from the
-        // bottom. No customPos yet → same auto-centered default this always
-        // used, just now expressed in visual space.
+        const Wv = swapped ? H : W, Hv = swapped ? W : H;
+        const size = st.sizePt * sizeScaleFor(Wv, Hv);
+        const textWidth = font.widthOfTextAtSize(st.text, size);
         const visX = customPos ? customPos.fracX * Wv : Wv/2 - textWidth/2;
         const visY = customPos ? Hv - customPos.fracY * Hv : Hv/2;
-
-        // Map the visual-space anchor back to the page's raw coordinate
-        // space. Derived from how each /Rotate value maps raw page corners
-        // to their displayed position (verified against pdf-lib's actual
-        // rendered output for each angle) — an identity for 0, and the
-        // appropriate axis swap/flip for 90/180/270.
         let x, y;
         if(angle === 90){ x = W - visY; y = visX; }
         else if(angle === 180){ x = W - visX; y = H - visY; }
         else if(angle === 270){ x = visY; y = H - visX; }
         else { x = visX; y = visY; }
-
-        page.drawText(text, {
-          x, y,
-          size, font, color: rgb(r,g,b), opacity,
-          // The same +angle composition that maps the visual anchor point
-          // back to raw space also applies to rotation: a page displayed
-          // rotated by `angle` needs its raw-space text rotation offset by
-          // that same amount for the FINAL on-screen angle to still read as
-          // the plain `rotation` value the user picked (verified the same
-          // way as the position mapping above).
-          rotate: degrees(rotation + angle),
-        });
+        page.drawText(st.text, { x, y, size, font, color: rgb(r,g,b), opacity: st.opacity, rotate: degrees(st.rotation + angle) });
+        done++;
       });
       const bytes = await doc.save();
       outputBlob = new Blob([bytes], { type:"application/pdf" });
-      result.querySelector(".stats").innerHTML = `<b>${doc.getPageCount()}</b> หน้า · <b>${fmtBytes(outputBlob.size)}</b>`;
+      result.querySelector(".stats").innerHTML = `ใส่ลายน้ำ <b>${done}</b> จาก ${doc.getPageCount()} หน้า · <b>${fmtBytes(outputBlob.size)}</b>`;
       setFilenameDefault(filenameInput, `${fileName}_watermarked`);
       result.classList.add("show");
       setStatus(status, "สำเร็จ", "ok");
     }catch(e){
       setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
     }
-    runBtn.disabled = false;
+    runBtn.disabled = !buffer || selected.size === 0;
   };
   removeBtn.onclick = ()=>{
+    loadSeq++;
     buffer = null; outputBlob = null;
     body.style.display = "none";
     input.value = "";
@@ -1806,8 +2064,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       }
     }
 
-    return { attemptTrueTextRemoval, extractOriginalFontBytes };
+    return { attemptTrueTextRemoval, extractOriginalFontBytes, tokenize, walkTextPositions, getCombinedContentBytes };
   })();
+  window.LyraContentEditor = ContentEditor; // shared with "ลบลายน้ำ"
   let activeItem = null, activeDiv = null;
   let insertPos = null; // { x, yBaseline } in PDF page coords — set when the popover is open in "add new text" mode instead of "edit existing text" mode
   let addMode = false;
@@ -1888,6 +2147,26 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // matching the "click = where you're stamping" mental model rather than
   // inserted text's baseline-left convention.
   const insertedSymbols = new Map();
+  let currentPjsDoc = null, retiredPjsDoc = null, currentPjsPage = null;
+  let currentTextItems = [];
+  // The existing text closest to a point on the page (PDF coordinates), used
+  // so "+ เพิ่มข้อความใหม่" starts with the same font/size/colour as the
+  // line it's being added next to. Ignores text too far away to be related.
+  function nearestTextItem(x, yBaseline){
+    let best = null, bestScore = Infinity;
+    for(const it of currentTextItems){
+      if(!it || !it.str || !it.str.trim() || !it.transform) continue;
+      const t = it.transform;
+      const sz = Math.hypot(t[2], t[3]) || 10;
+      const ix = t[4], iy = t[5], w = it.width || sz * it.str.length * 0.5;
+      const dx = x < ix ? ix - x : (x > ix + w ? x - (ix + w) : 0);
+      const dy = Math.abs(yBaseline - iy);
+      if(dy > Math.max(sz * 3, 36) || dx > 320) continue;
+      const score = dy * 2 + dx * 0.4;
+      if(score < bestScore){ bestScore = score; best = it; }
+    }
+    return best;
+  }
   function originKey(x, y){ return Math.round(x*2) + "," + Math.round(y*2); }
   let suppressNextClick = false; // set right before a drag-release so the click event the browser still fires afterward doesn't also pop the edit popover open
 
@@ -1914,6 +2193,41 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     "std:mono":  { label: "Courier New / Courier (ฟอนต์มาตรฐาน)", regular: "Courier", bold: "CourierBold" },
   };
   function isStdFontKey(key){ return typeof key === "string" && key.indexOf("std:") === 0; }
+  // Fonts found at runtime rather than bundled with the app:
+  //   "local:<postscriptName>" — a font installed on THIS computer, read via
+  //       the browser's Local Font Access API (see findLocalFontFor below).
+  //       A complete font, so it can draw any character it supports.
+  //   "orig:<pdf font name>" — the font program embedded in the opened PDF
+  //       itself, as decoded by pdf.js (see recoverPdfjsFont below). Usually
+  //       a subset: only the characters the document already uses.
+  // Each entry: { kind, label, cssFamily, bytes, load(), charSet, cmapExtra,
+  //   bold, fallbackKey, boldKey, regularKey, noSubset }.
+  const extraFonts = new Map();
+  function isExtraFontKey(key){ return extraFonts.has(key); }
+  async function ensureExtraFontBytes(entry){
+    if(!entry.bytes) entry.bytes = await entry.load();
+    return entry.bytes;
+  }
+  // pdf.js rebuilds every embedded font's cmap around the PDF's own
+  // character codes (mostly private-use code points) and only adds a real
+  // Unicode entry for some glyphs — the space glyph, for one, is usually
+  // left out. recoverPdfjsFont() works out the missing Unicode -> glyph
+  // pairs from the PDF's /ToUnicode data; this teaches the embedded fontkit
+  // font about them so layout, widths and the generated /ToUnicode (copy &
+  // search in the saved file) all use the right glyphs.
+  function patchFontCmap(pdfFont, extra){
+    try{
+      const fk = pdfFont.embedder && pdfFont.embedder.font;
+      if(!fk || !extra || !extra.size) return;
+      const proc = fk._cmapProcessor;
+      const origLookup = proc.lookup.bind(proc);
+      proc.lookup = (cp, vs)=> origLookup(cp, vs) || extra.get(cp) || 0;
+      // read the base set from the cmap processor, NOT fk.characterSet:
+      // fontkit caches that getter as a locked own property on first read
+      const merged = Array.from(new Set([...(proc.getCharacterSet() || []), ...extra.keys()]));
+      Object.defineProperty(fk, "characterSet", { value: merged, configurable: true });
+    }catch(e){ /* best-effort: worst case the coverage check falls back to a built-in font */ }
+  }
   async function getEmbeddedFont(key){
     if(qeFontCache[key]) return qeFontCache[key];
     let font;
@@ -1921,6 +2235,11 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       const isBold = /:b$/.test(key);
       const spec = STD_FONTS[key.replace(/:b$/, "")];
       font = await workingDoc.embedFont(StandardFonts[isBold ? spec.bold : spec.regular]);
+    }else if(isExtraFontKey(key)){
+      const entry = extraFonts.get(key);
+      const bytes = await ensureExtraFontBytes(entry);
+      font = await workingDoc.embedFont(bytes, { subset: !entry.noSubset });
+      if(entry.cmapExtra) patchFontCmap(font, entry.cmapExtra);
     }else{
       font = await workingDoc.embedFont(qeFontBytes(key), { subset: true });
     }
@@ -1931,6 +2250,21 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // "-bold" sibling entry that shares the same base family; fall back to the
   // regular weight if no bold variant exists for that family.
   function resolveFontKey(baseKey, wantBold){
+    if(isExtraFontKey(baseKey)){
+      const e = extraFonts.get(baseKey);
+      if(wantBold){
+        if(e.bold) return baseKey;
+        if(e.boldKey && extraFonts.has(e.boldKey)) return e.boldKey;
+        // no bold version of this exact font: a built-in bold beats silently ignoring the checkbox
+        return resolveFontKey(e.fallbackKey || "sarabun", true);
+      }
+      if(e.bold){
+        if(e.regularKey && extraFonts.has(e.regularKey)) return e.regularKey;
+        // the document only has this font in bold: a regular built-in beats ignoring the checkbox
+        return resolveFontKey(e.fallbackKey || "sarabun", false);
+      }
+      return baseKey;
+    }
     if(!wantBold) return baseKey;
     if(isStdFontKey(baseKey)) return baseKey + ":b";
     const list = window.__QE_FONTS || [];
@@ -1957,47 +2291,91 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     });
   }
   populateFontSelect();
+  // Detected fonts (this computer's / the document's own) are listed in their
+  // own group at the top of the dropdown, so they stay available for new
+  // "+ เพิ่มข้อความ" text too, not just the line they were found for. Only
+  // the user-facing entries are listed (bold/regular siblings are picked
+  // automatically from the bold checkbox).
+  function syncExtraFontOptions(){
+    const keep = fontSelect.value;
+    let group = fontSelect.querySelector("optgroup[data-extra]");
+    if(group) group.remove();
+    const listed = Array.from(extraFonts.entries()).filter(([, e])=> e.listed);
+    if(listed.length){
+      group = document.createElement("optgroup");
+      group.label = "ฟอนต์ที่ตรวจพบ";
+      group.setAttribute("data-extra", "1");
+      listed.forEach(([key, e])=>{
+        const opt = document.createElement("option");
+        opt.value = key; opt.textContent = e.label;
+        group.appendChild(opt);
+      });
+      fontSelect.insertBefore(group, fontSelect.firstChild);
+    }
+    fontSelect.value = keep;
+    if(fontSelect.value !== keep && fontSelect.options.length) fontSelect.value = "sarabun";
+  }
+  // A new PDF gets its own embedded fonts — forget the previous file's.
+  function clearDocumentFonts(){
+    Array.from(extraFonts.keys()).forEach(k=>{ if(k.indexOf("orig:") === 0) extraFonts.delete(k); });
+    if(lastFontKey && lastFontKey.indexOf("orig:") === 0) lastFontKey = "sarabun";
+    syncExtraFontOptions();
+  }
 
   /* ============================================================
    * MATCHING THE SOURCE DOCUMENT'S OWN FONT
    *
-   * Two ways to get replacement text to visually match the original
-   * document instead of the app's fixed Thai font list:
-   *  1. Best-effort auto-detect: try to pull the ORIGINAL PDF's own
-   *     embedded font program for the clicked text and reuse it. This only
-   *     works when the source PDF embeds a COMPLETE font (not the
-   *     used-characters-only subset that Word/LibreOffice/browsers embed by
-   *     default) — see ContentEditor.extractOriginalFontBytes for why.
-   *  2. Name matching: when that fails, match the source PDF's declared
-   *     font name against the app's own bundled fonts and pre-select the
-   *     closest one. Silently unavailable when neither works; the built-in
-   *     font list (whatever was last selected) is always the fallback.
+   * When existing text is clicked, the editor tries — in this order — to
+   * get a font that looks exactly like the original line:
+   *  1. The same font installed on THIS computer (Chrome/Edge "Local Font
+   *     Access"). A complete font, so it can draw any new text. Needs the
+   *     person's one-time permission; until it's granted a button offers it.
+   *  2. The font embedded in the PDF itself, as already decoded by pdf.js
+   *     for the on-screen preview. Usually only a SUBSET (the characters the
+   *     document already uses), so it's only used when every character of
+   *     the new text exists in it — otherwise the closest built-in font is
+   *     used automatically (resolveEditFont / fontForText).
+   *  3. Otherwise the closest built-in font, guessed from the font's name
+   *     (guessFontFor).
+   * The dropdown always lets the person override the choice.
    * ============================================================ */
   const fontHintEl = document.getElementById("quickedit-font-hint");
-  let originalFontBytes = null;      // reset per popover open; best-effort per-item
+  const localFontBtn = document.getElementById("quickedit-localfont-btn");
 
+  const LAYOUT_CHARS = new Set([9, 10, 13]); // tab / line breaks are layout, not glyphs
   function fontFullySupportsText(font, text){
     try{
       const set = new Set(font.getCharacterSet());
       for(const ch of text){
-        if(!set.has(ch.codePointAt(0))) return false;
+        const cp = ch.codePointAt(0);
+        if(LAYOUT_CHARS.has(cp)) continue;
+        if(!set.has(cp)) return false;
       }
       return true;
     }catch(e){ return false; }
   }
-  function removeSpecialFontOption(value){
-    const opt = fontSelect.querySelector('option[value="'+value+'"]');
-    if(opt) opt.remove();
+  // pdf.js reports SARA AM (ำ) decomposed as NIKHAHIT + SARA AA (ํา) and
+  // sometimes leaks control bytes from broken /ToUnicode tables; neither is
+  // something a person typed, so clean them before editing/drawing.
+  function cleanExtractedText(str){
+    return String(str || "").replace(/\u0E4D\u0E32/g, "\u0E33").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
   }
-  function addSpecialFontOption(value, label){
-    removeSpecialFontOption(value);
-    const opt = document.createElement("option");
-    opt.value = value; opt.textContent = label;
-    fontSelect.insertBefore(opt, fontSelect.firstChild);
-    fontSelect.value = value;
+  function charSetCovers(set, text){
+    if(!set) return false;
+    for(const ch of cleanExtractedText(text)){
+      if(LAYOUT_CHARS.has(ch.codePointAt(0))) continue;
+      if(!set.has(ch.codePointAt(0))) return false;
+    }
+    return true;
+  }
+  function fontLabelFor(key){
+    if(isExtraFontKey(key)) return extraFonts.get(key).label;
+    if(STD_FONTS[key]) return STD_FONTS[key].label;
+    const e = (window.__QE_FONTS || []).find(f => f.key === key);
+    return e ? e.label : "Sarabun";
   }
 
-  const THAI_CHAR_RE = /[\u0E00-\u0E7F]/;
+  const THAI_CHAR_RE = /[฀-๿]/;
   const THAI_FONT_NAME_RE = /sarabun|angsana|cordia|browallia|dilleniaupc|eucrosia|freesia|iris|jasmine|kodchiang|lilyup|thsarabun|th\s?sarabun|thaisans|loma|garuda|waree|norasi|purisa|kinnari|umpush|tlwg/i;
   function guessFontFor(baseFontName, text){
     const name = baseFontName || "";
@@ -2010,101 +2388,486 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     return { key, bold, italic };
   }
 
-  // Fires after a popover is already open for `item`; runs in the
-  // background and, if successful, adds/selects the "ฟอนต์ต้นฉบับ" option a
-  // moment later — never blocks opening the editor. Falls back to Sarabun
-  // (the app's only remaining built-in font) when the real font can't be
-  // recovered — see the header comment on vendor/quickedit-fonts-data.js for
-  // why the other bundled Thai fonts were removed.
-  async function tryDetectOriginalFont(item){
-    originalFontBytes = null;
-    removeSpecialFontOption("__original__");
-    if(!workingBytes) return;
+  /* ---------- 2. the PDF's own embedded font, via pdf.js ---------- */
+  let _cssFontSeq = 0;
+  function registerCssFont(bytes, isBold){
+    // lets the live preview box show the real font too; purely cosmetic
+    try{
+      const family = "qe-detected-" + (++_cssFontSeq);
+      // declare the face's real weight so a bold original isn't bolded again by the browser
+      const face = new FontFace(family, bytes.slice(0), { weight: isBold ? "700" : "400" });
+      document.fonts.add(face);
+      face.load().catch(()=>{});
+      return family;
+    }catch(e){ return ""; }
+  }
+  // Build Unicode -> glyph id pairs for every character code of a pdf.js font
+  // (pdf.js keeps the PDF's own code -> its rebuilt "font char" table
+  // (toFontChar) and code -> Unicode (/ToUnicode) when fontExtraProperties
+  // is on, and its rebuilt cmap maps font char -> glyph).
+  function pdfjsUnicodeToGlyph(pjsFont, fk){
+    const extra = new Map();
+    try{
+      const toFontChar = pjsFont.toFontChar || [];
+      const tu = pjsFont.toUnicode || {};
+      const unicodeOf = (code)=>{
+        if(Array.isArray(tu._map)) return tu._map[code];
+        if(typeof tu.firstChar === "number") return (code >= tu.firstChar && code <= tu.lastChar) ? String.fromCharCode(code) : undefined;
+        return undefined;
+      };
+      const proc = fk._cmapProcessor;
+      for(const codeStr in toFontChar){
+        const code = +codeStr;
+        const fontChar = toFontChar[code];
+        if(typeof fontChar !== "number") continue;
+        let u = unicodeOf(code);
+        if(typeof u === "number") u = String.fromCodePoint(u);
+        if(typeof u !== "string" || !u) continue;
+        const chars = Array.from(u);
+        if(chars.length !== 1) continue; // ligatures (e.g. "fi") can't be typed as one character
+        const cp = chars[0].codePointAt(0);
+        if(cp < 0x20 || (cp >= 0xE000 && cp <= 0xF8FF)) continue;
+        const gid = proc.lookup(fontChar);
+        if(!gid) continue;
+        if(!extra.has(cp) && !proc.lookup(cp)) extra.set(cp, gid);
+      }
+      // pdf.js leaves blank glyphs (the space!) out of its tables entirely,
+      // but the glyph itself is still in the font: find the outline-less
+      // glyph whose advance matches the PDF's declared width for the
+      // character code that /ToUnicode says is a space (often not 32: subset
+      // fonts renumber their codes).
+      if(!proc.lookup(32) && !extra.has(32) && fk.numGlyphs < 5000){
+        let w = 0;
+        const widths = pjsFont.widths || {};
+        if(Array.isArray(tu._map)){
+          for(let code=0; code<tu._map.length; code++){
+            if(tu._map[code] === " " && widths[code] > 0){ w = widths[code]; break; }
+          }
+        }
+        if(!w && widths[32] > 0) w = widths[32];
+        if(w > 0){
+          const want = w * fk.unitsPerEm / 1000;
+          for(let gid=1; gid<fk.numGlyphs; gid++){
+            const g = fk.getGlyph(gid);
+            if(Math.abs(g.advanceWidth - want) <= Math.max(2, want*0.02) && g.path.commands.length === 0){ extra.set(32, gid); break; }
+          }
+        }
+      }
+    }catch(e){}
+    return extra;
+  }
+  function recoverPdfjsFont(item, info, fallbackKey){
+    if(!currentPjsPage || !item.fontName) return null;
+    let pjsFont = null;
+    try{ pjsFont = currentPjsPage.commonObjs.get(item.fontName); }catch(e){ return null; }
+    if(!pjsFont || !pjsFont.data || pjsFont.isType3Font || pjsFont.missingFile) return null;
+    const name = info.name || String(pjsFont.name || "").replace(/^[A-Z]{6}\+/, "") || "ฟอนต์ในไฟล์";
+    const key = "orig:" + (pjsFont.name || item.fontName);
+    if(extraFonts.has(key)) return key;
+    try{
+      const bytes = new Uint8Array(pjsFont.data);
+      const fk = fontkit.create(bytes);
+      if(!fk || typeof fk.layout !== "function") return null;
+      // Only TrueType outlines: pdf.js's rebuilt CFF fonts (from Type1/CFF
+      // embeds, e.g. LaTeX or InDesign PDFs) come out of pdf-lib as a font
+      // that other PDF readers reject — verified with poppler/Chrome OTS.
+      if(!fk.directory || !fk.directory.tables || !fk.directory.tables.glyf) return null;
+      const extra = pdfjsUnicodeToGlyph(pjsFont, fk);
+      const charSet = new Set([...(fk.characterSet || []), ...extra.keys()]);
+      extraFonts.set(key, {
+        kind: "orig", listed: true,
+        label: name + " (ฟอนต์ต้นฉบับในไฟล์)",
+        displayName: name,
+        bytes, load: async()=> bytes, charSet, cmapExtra: extra,
+        bold: !!(info.bold), fallbackKey,
+        cssFamily: registerCssFont(bytes, !!info.bold),
+        noSubset: false,
+      });
+      return key;
+    }catch(e){ return null; }
+  }
+
+  /* ---------- 1. the same font installed on this computer ---------- */
+  const localFontsSupported = typeof window.queryLocalFonts === "function";
+  let _localFontList = null;
+  async function localFontPermission(){
+    if(!localFontsSupported) return "unsupported";
+    if(_localFontList) return "granted";
+    try{
+      const st = await navigator.permissions.query({ name: "local-fonts" });
+      return st.state;
+    }catch(e){ return "prompt"; }
+  }
+  // Must run inside a click handler the first time (the browser shows its
+  // permission prompt then); afterwards it works silently.
+  async function loadLocalFontList(){
+    if(_localFontList) return _localFontList;
+    _localFontList = await window.queryLocalFonts();
+    return _localFontList;
+  }
+  function normFontName(s){
+    return String(s || "").toLowerCase()
+      .replace(/^[a-z]{6}\+/, "")
+      .replace(/[^a-z0-9฀-๿]/g, "")
+      .replace(/(ps)?mt$/, "");
+  }
+  function styleFlags(s){
+    s = String(s || "");
+    return { bold: /bold|black|heavy|semibold|demi/i.test(s), italic: /italic|oblique/i.test(s) };
+  }
+  function matchLocalFont(list, pdfName, wantBold, wantItalic){
+    const n = normFontName(pdfName);
+    if(!n) return null;
+    let hit = list.find(f => normFontName(f.postscriptName) === n)
+           || list.find(f => normFontName(f.fullName) === n);
+    if(hit) return hit;
+    // family + style: "AngsanaNew-Bold", "Cordia New,Bold", "TimesNewRomanPS-BoldItalicMT"
+    const fam = normFontName(String(pdfName).replace(/^[A-Z]{6}\+/, "").split(/[-,]/)[0]).replace(/ps$/, "");
+    const same = list.filter(f => normFontName(f.family) === fam);
+    if(!same.length) return null;
+    const score = (f)=>{
+      const st = styleFlags(f.style);
+      return (st.bold === wantBold ? 2 : 0) + (st.italic === wantItalic ? 1 : 0) + (/^(regular|normal|roman|book)$/i.test(f.style) ? 0.5 : 0);
+    };
+    return same.slice().sort((a, b)=> score(b) - score(a))[0];
+  }
+  // --- TrueType Collection (.ttc, e.g. Cambria) -> standalone font, since
+  // pdf-lib can only embed a single-font file ---
+  function buildSfnt(version, tables){
+    tables = tables.slice().sort((a, b)=> a.tag - b.tag);
+    const n = tables.length;
+    let es = 1, ls = 0; while(es * 2 <= n){ es *= 2; ls++; }
+    let total = 12 + 16*n;
+    tables.forEach(t=>{ total += (t.data.length + 3) & ~3; });
+    const out = new Uint8Array(total), dv = new DataView(out.buffer);
+    dv.setUint32(0, version); dv.setUint16(4, n); dv.setUint16(6, es*16); dv.setUint16(8, ls); dv.setUint16(10, n*16 - es*16);
+    let off = 12 + 16*n;
+    tables.forEach((t, i)=>{
+      const r = 12 + 16*i;
+      dv.setUint32(r, t.tag); dv.setUint32(r+4, t.checksum); dv.setUint32(r+8, off); dv.setUint32(r+12, t.data.length);
+      out.set(t.data, off);
+      off += (t.data.length + 3) & ~3;
+    });
+    return out;
+  }
+  function extractFromCollection(bytes, postscriptName){
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = dv.getUint32(8);
+    for(let i=0;i<count;i++){
+      try{
+        const off = dv.getUint32(12 + 4*i);
+        const numTables = dv.getUint16(off + 4);
+        const tables = [];
+        for(let t=0;t<numTables;t++){
+          const r = off + 12 + 16*t;
+          const o = dv.getUint32(r+8), len = dv.getUint32(r+12);
+          tables.push({ tag: dv.getUint32(r), checksum: dv.getUint32(r+4), data: bytes.subarray(o, o + len) });
+        }
+        const single = buildSfnt(dv.getUint32(off), tables);
+        if(fontkit.create(single).postscriptName === postscriptName) return single;
+      }catch(e){}
+    }
+    return null;
+  }
+  async function readLocalFontBytes(fd){
+    const blob = await fd.blob();
+    let bytes = new Uint8Array(await blob.arrayBuffer());
+    if(bytes[0] === 0x74 && bytes[1] === 0x74 && bytes[2] === 0x63 && bytes[3] === 0x66){ // "ttcf"
+      bytes = extractFromCollection(bytes, fd.postscriptName);
+      if(!bytes) throw new Error("อ่านฟอนต์ " + fd.fullName + " จากเครื่องไม่สำเร็จ");
+    }
+    return bytes;
+  }
+  function registerLocalEntry(fd, fallbackKey, listed){
+    const key = "local:" + fd.postscriptName;
+    if(extraFonts.has(key)){
+      const e = extraFonts.get(key);
+      if(listed && !e.listed){ e.listed = true; }
+      return key;
+    }
+    extraFonts.set(key, {
+      kind: "local", listed: !!listed,
+      label: fd.fullName + " (ฟอนต์ในเครื่อง)",
+      displayName: fd.fullName,
+      bytes: null, load: ()=> readLocalFontBytes(fd), charSet: null, cmapExtra: null,
+      bold: styleFlags(fd.style).bold, fallbackKey,
+      cssFamily: "'" + String(fd.family).replace(/'/g, "") + "'",
+      family: fd.family, noSubset: false,
+    });
+    return key;
+  }
+  // Returns { key } for a usable installed font, or { error } / null.
+  async function findLocalFontFor(info, text, fallbackKey){
+    const list = await loadLocalFontList();
+    const fd = matchLocalFont(list, info.name, !!info.bold, !!info.italic);
+    if(!fd) return null;
+    const key = registerLocalEntry(fd, fallbackKey, true);
+    const entry = extraFonts.get(key);
+    try{
+      const bytes = await ensureExtraFontBytes(entry);
+      const fk = fontkit.create(bytes);
+      const os2 = fk["OS/2"];
+      if(os2 && os2.fsType && os2.fsType.noEmbedding){
+        extraFonts.delete(key);
+        return { error: "ฟอนต์ " + fd.fullName + " ในเครื่องไม่อนุญาตให้ฝังลงไฟล์ PDF (ข้อกำหนดลิขสิทธิ์ของฟอนต์)" };
+      }
+      // pdf-lib/fontkit write CID-keyed CFF fonts (large CJK .otf/.ttc
+      // fonts) into a file other PDF readers can't open — skip those.
+      const cff = fk["CFF "];
+      if(cff && cff.isCIDFont){ extraFonts.delete(key); return null; }
+      entry.noSubset = !!(os2 && os2.fsType && os2.fsType.noSubsetting);
+      entry.charSet = new Set(fk.characterSet || []);
+      if(!charSetCovers(entry.charSet, text)){
+        extraFonts.delete(key);
+        return null; // matched by name but can't even draw the original line: not the right font
+      }
+    }catch(e){
+      extraFonts.delete(key);
+      return { error: e.message };
+    }
+    // bold/regular siblings of the same family, so the bold checkbox keeps the same look
+    const fam = list.filter(f => f.family === fd.family && !styleFlags(f.style).italic);
+    const boldSib = fam.find(f => styleFlags(f.style).bold);
+    const regSib = fam.find(f => !styleFlags(f.style).bold);
+    if(boldSib && boldSib.postscriptName !== fd.postscriptName) entry.boldKey = registerLocalEntry(boldSib, fallbackKey, false);
+    if(regSib && regSib.postscriptName !== fd.postscriptName) entry.regularKey = registerLocalEntry(regSib, fallbackKey, false);
+    return { key };
+  }
+
+  /* ---------- detection, run each time existing text is clicked ---------- */
+  async function getSourceFontInfo(item){
+    let name = null, bold = false, italic = false;
     try{
       const tempDoc = await PDFDocument.load(workingBytes.slice(0), { ignoreEncryption: true });
       const tempPage = tempDoc.getPage(currentPage - 1);
-      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item) || { bytes: null, baseFontName: null };
-
-      if(extracted.bytes){
-        try{
-          tempDoc.registerFontkit(fontkit);
-          const font = await tempDoc.embedFont(extracted.bytes, { subset: true });
-          if(typeof font.getCharacterSet !== "function") throw new Error("unusable");
-          // Only offer it if the item is STILL the one being edited (user
-          // may have already closed/switched popovers by the time this
-          // resolves).
-          if(activeItem !== item) return;
-          originalFontBytes = extracted.bytes;
-          addSpecialFontOption("__original__", "ฟอนต์ต้นฉบับ (ตรวจพบอัตโนมัติ)");
-          if(fontHintEl) fontHintEl.textContent = "พบฟอนต์จากไฟล์ต้นฉบับ ใช้แทนได้เลย";
-          return;
-        }catch(e){
-          // fall through to the Sarabun fallback below
-        }
+      const extracted = ContentEditor.extractOriginalFontBytes(tempDoc, tempPage, item);
+      if(extracted && extracted.baseFontName) name = extracted.baseFontName;
+    }catch(e){}
+    try{
+      const f = currentPjsPage && item.fontName ? currentPjsPage.commonObjs.get(item.fontName) : null;
+      if(f){
+        if(!name && f.name) name = String(f.name).replace(/^[A-Z]{6}\+/, "");
+        bold = !!(f.bold || f.black);
+        italic = !!f.italic;
       }
-
-      // No usable embedded font program recovered — pick the closest
-      // built-in font from the font's declared name and the text itself:
-      // Latin text in an Arial-like / Times-like / Courier-like font maps to
-      // the matching standard font (so edited English lines keep the look of
-      // the lines around them); Thai text, or a Thai font name, maps to
-      // Sarabun. The user can still override in the dropdown.
-      if(activeItem === item){
-        const guess = guessFontFor(extracted.baseFontName, item.str);
-        lastFontKey = guess.key;
-        fontSelect.value = guess.key;
-        if(extracted.baseFontName){
-          if(boldCheckbox) boldCheckbox.checked = guess.bold;
-          if(italicCheckbox) italicCheckbox.checked = guess.italic;
-          lastBold = guess.bold;
-        }
-        updatePreview();
-        if(fontHintEl){
-          const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
-          fontHintEl.textContent = (extracted.baseFontName
-            ? "ฟอนต์ในเอกสารคือ " + extracted.baseFontName + " — เลือก "
-            : "เลือก ") + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
-        }
-      }
-    }catch(e){
-      originalFontBytes = null;
+    }catch(e){}
+    const fromName = styleFlags(name);
+    return { name, bold: bold || fromName.bold, italic: italic || fromName.italic };
+  }
+  function selectDetectedFont(key, info){
+    syncExtraFontOptions();
+    lastFontKey = key;
+    fontSelect.value = key;
+    if(info.name){
+      if(boldCheckbox) boldCheckbox.checked = info.bold;
+      if(italicCheckbox) italicCheckbox.checked = info.italic;
+      lastBold = info.bold;
     }
+    updatePreview();
+  }
+  let detectSeq = 0;
+  let pendingLocalInfo = null;
+  let detectTarget = null; // { item, insert } — what the "find on this computer" button re-runs
+  // `item` is the clicked text — or, in "+ เพิ่มข้อความใหม่" mode, the text
+  // nearest to the click point (opts.insert), so new text matches its neighbours.
+  async function tryDetectOriginalFont(item, opts){
+    opts = opts || {};
+    const seq = ++detectSeq;
+    if(localFontBtn) localFontBtn.hidden = true;
+    pendingLocalInfo = null;
+    detectTarget = { item, insert: !!opts.insert, pos: opts.insert ? insertPos : null };
+    if(!workingBytes) return;
+    const myPos = insertPos;
+    const stale = ()=> seq !== detectSeq || (opts.insert ? (!insertPos || insertPos !== myPos) : activeItem !== item);
+    const nearPrefix = opts.insert ? "ตั้งค่าตามข้อความใกล้เคียง “" + cleanExtractedText(item.str).trim().slice(0, 24) + "” · " : "";
+    try{
+      const info = await getSourceFontInfo(item);
+      if(stale()) return;
+      const guess = guessFontFor(info.name, item.str);
+      const fallbackKey = guess.key;
+      let notes = [];
+
+      // 1. same font on this computer
+      if(info.name && localFontsSupported){
+        const perm = await localFontPermission();
+        if(stale()) return;
+        if(perm === "granted"){
+          const res = await findLocalFontFor(info, item.str, fallbackKey).catch(()=> null);
+          if(stale()) return;
+          if(res && res.key){
+            selectDetectedFont(res.key, info);
+            if(fontHintEl) fontHintEl.textContent = nearPrefix + "ใช้ฟอนต์ " + extraFonts.get(res.key).displayName + " จากเครื่องนี้ — ตรงกับฟอนต์ในเอกสาร (" + info.name + ")";
+            return;
+          }
+          notes.push(res && res.error ? res.error : "ไม่พบฟอนต์ " + info.name + " ในเครื่องนี้");
+        }else if(perm === "prompt" && localFontBtn){
+          pendingLocalInfo = info;
+          localFontBtn.textContent = "ค้นหาฟอนต์ " + info.name + " ในเครื่องนี้";
+          localFontBtn.hidden = false;
+        }
+      }
+
+      // 2. the PDF's own embedded font (only if it can at least redraw the original line)
+      const origKey = recoverPdfjsFont(item, info, fallbackKey);
+      if(origKey && charSetCovers(extraFonts.get(origKey).charSet, item.str)){
+        selectDetectedFont(origKey, info);
+        if(fontHintEl){
+          fontHintEl.textContent = nearPrefix + (notes.length ? notes.join(" · ") + " — " : "")
+            + "ใช้ฟอนต์ต้นฉบับจากไฟล์ (" + extraFonts.get(origKey).displayName + ") ซึ่งมีเฉพาะตัวอักษรที่ใช้อยู่ในเอกสาร ถ้าพิมพ์ตัวที่ไม่มี ระบบจะใช้ "
+            + fontLabelFor(fallbackKey) + " แทนอัตโนมัติ";
+        }
+        return;
+      }
+
+      // 3. closest built-in font
+      lastFontKey = guess.key;
+      fontSelect.value = guess.key;
+      if(info.name){
+        if(boldCheckbox) boldCheckbox.checked = info.bold;
+        if(italicCheckbox) italicCheckbox.checked = info.italic;
+        lastBold = info.bold;
+      }
+      updatePreview();
+      if(fontHintEl){
+        const shown = fontSelect.options[fontSelect.selectedIndex] ? fontSelect.options[fontSelect.selectedIndex].textContent : guess.key;
+        fontHintEl.textContent = nearPrefix + (notes.length ? notes.join(" · ") + " — " : "")
+          + (info.name ? "ฟอนต์ในเอกสารคือ " + info.name + " — เลือก " : "เลือก ")
+          + shown + " ให้อัตโนมัติ (ถ้าดูไม่เหมือนบรรทัดอื่น เปลี่ยนฟอนต์จากรายการด้านบนได้)";
+      }
+    }catch(e){ /* detection is best-effort; the dropdown still works */ }
+  }
+  if(localFontBtn){
+    localFontBtn.addEventListener("click", async ()=>{
+      const target = detectTarget;
+      localFontBtn.disabled = true;
+      try{
+        await loadLocalFontList(); // shows the browser's permission prompt
+      }catch(e){
+        if(fontHintEl) fontHintEl.textContent = "ไม่ได้รับอนุญาตให้อ่านฟอนต์ในเครื่อง — ใช้ฟอนต์ที่เลือกไว้ต่อไป (เปิดสิทธิ์ได้ที่ไอคอนแม่กุญแจข้างช่อง URL)";
+        localFontBtn.hidden = true;
+        localFontBtn.disabled = false;
+        return;
+      }
+      localFontBtn.disabled = false;
+      if(!target) return;
+      if(target.insert){ if(insertPos && insertPos === target.pos) tryDetectOriginalFont(target.item, { insert: true }); }
+      else if(activeItem === target.item) tryDetectOriginalFont(target.item);
+    });
+  }
+
+  // Draw-ready font for `text`: the requested font if it has every character,
+  // otherwise the closest built-in one (standard fonts are Latin-only and a
+  // document's own embedded font is usually a subset) — an edit must never
+  // end up with missing/blank glyphs.
+  // Fonts at the same point size can look very different in size (Angsana
+  // New or TH Sarabun New next to Sarabun, say). When an edit has to fall
+  // back from the document's own font to a built-in one, scale the size so
+  // the letters stand as tall as the original's: compare the height of a
+  // flat letter (a Thai consonant like ก, or Latin x) in both fonts.
+  const REF_CHARS_THAI = "กนมบอรวงคสจตา", REF_CHARS_LATIN = "xaeonmursvwz";
+  function fontkitOf(pdfFont){ const f = pdfFont && pdfFont.embedder && pdfFont.embedder.font; return f && typeof f.glyphForCodePoint === "function" ? f : null; }
+  function glyphTop(fk, cp, extra){
+    try{
+      let id = fk._cmapProcessor ? fk._cmapProcessor.lookup(cp) : 0;
+      if(!id && extra && extra.has(cp)) id = extra.get(cp);
+      if(!id) return 0;
+      // pass the code point: fontkit caches glyph objects by id, and the
+      // embedded font reuses them when writing the PDF's /ToUnicode — a
+      // glyph first created without its code point would copy/search as
+      // nothing (this dropped "ก" from saved text)
+      const g = fk.getGlyph(id, [cp]);
+      const bb = g && g.bbox;
+      return bb && bb.maxY > 0 ? bb.maxY / fk.unitsPerEm : 0;
+    }catch(e){ return 0; }
+  }
+  async function sizeScaleBetween(entry, fallbackFont, text){
+    if(!fallbackFont) return 1;
+    const fbFk = fontkitOf(fallbackFont);
+    const fbAfm = !fbFk && fallbackFont.embedder ? fallbackFont.embedder.font : null;
+    return scaleFromFonts(entry, fbFk, fbAfm, text);
+  }
+  async function scaleFromFonts(entry, fbFk, fbAfm, text){
+    try{
+      if(!entry || (!fbFk && !fbAfm)) return 1;
+      const bytes = await ensureExtraFontBytes(entry);
+      if(!entry.fk) entry.fk = fontkit.create(bytes);
+      const thai = THAI_CHAR_RE.test(text || "") || !/[a-z]/i.test(text || "");
+      for(const ch of (thai ? REF_CHARS_THAI : REF_CHARS_LATIN)){
+        const cp = ch.codePointAt(0);
+        const hOrig = glyphTop(entry.fk, cp, entry.cmapExtra);
+        const hFb = fbFk ? glyphTop(fbFk, cp, null) : (fbAfm && /[a-z]/.test(ch) ? (fbAfm.XHeight || 0) / 1000 : 0);
+        if(hOrig && hFb) return Math.min(1.6, Math.max(0.55, hOrig / hFb));
+      }
+    }catch(e){}
+    return 1;
+  }
+
+  async function fontForText(baseKey, wantBold, text){
+    let key = resolveFontKey(baseKey || "sarabun", wantBold);
+    let font = null, warning = null, sizeScale = 1;
+    try{ font = await getEmbeddedFont(key); }catch(e){ font = null; }
+    if(font && (isStdFontKey(key) || isExtraFontKey(key)) && !fontFullySupportsText(font, text)) font = null;
+    // bold asked for a detected font that has no bold version: resolveFontKey
+    // already switched to a built-in bold — still match the letter height
+    if(font && isExtraFontKey(baseKey) && !isExtraFontKey(key)){
+      const be = extraFonts.get(baseKey);
+      const sc = await sizeScaleBetween(be, font, text);
+      if(Math.abs(sc - 1) > 0.03) sizeScale = sc;
+      warning = "ฟอนต์ " + be.displayName + " ในเอกสารมีแต่แบบ" + (wantBold ? "ตัวปกติ" : "ตัวหนา")
+        + " จึงใช้ " + fontLabelFor(be.fallbackKey || "sarabun") + (wantBold ? " ตัวหนา" : " ตัวปกติ") + " แทน";
+    }
+    if(!font){
+      const entry = extraFonts.get(baseKey) || extraFonts.get(key);
+      let fb = entry ? (entry.fallbackKey || "sarabun") : "sarabun";
+      key = resolveFontKey(fb, wantBold);
+      font = await getEmbeddedFont(key);
+      if(isStdFontKey(key) && !fontFullySupportsText(font, text)){
+        fb = "sarabun";
+        key = resolveFontKey(fb, wantBold);
+        font = await getEmbeddedFont(key);
+      }
+      warning = entry
+        ? "ฟอนต์ " + entry.displayName + " ไม่มีตัวอักษรบางตัวในข้อความนี้ ใช้ " + fontLabelFor(fb) + " แทน"
+        : "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
+      if(entry){
+        const sc = await sizeScaleBetween(entry, font, text);
+        if(Math.abs(sc - 1) > 0.03){ sizeScale = sc; warning += " และปรับขนาดให้ตัวอักษรสูงเท่าต้นฉบับ"; }
+        // A subset of the very font we fall back to (e.g. text this app
+        // inserted earlier in Sarabun, now re-edited) is not a real swap —
+        // the letters look the same, so don't alarm the user.
+        const famOf = n => String(n || "").toLowerCase().replace(/^[a-z]{6}\+/, "").replace(/[-_ ]?(regular|bold|italic|oblique|medium|light)+$/g, "").replace(/[^a-z0-9]/g, "");
+        if(famOf(entry.displayName) && famOf(entry.displayName) === famOf(fontLabelFor(fb)).slice(0, famOf(entry.displayName).length) && Math.abs(sizeScale - 1) <= 0.03) warning = null;
+      }
+    }
+    return { font, warning, key, sizeScale };
   }
 
   // Resolve which pdf-lib font object to draw the replacement text with,
-  // honoring the popover's font dropdown: the auto-detected original font,
-  // or one of the app's built-in Thai fonts. Always falls back to a built-in
-  // font if the preferred choice can't render every character in the new
-  // text (or fails to embed at all) — an edit should never end up with
-  // missing/tofu glyphs.
+  // honoring the popover's font dropdown (see fontForText for the fallback).
   async function resolveEditFont(newText){
-    const selectedValue = fontSelect.value;
+    const baseKey = fontSelect.value || lastFontKey || "sarabun";
     const wantBold = !!(boldCheckbox && boldCheckbox.checked);
-    let warning = null;
-
-    if(selectedValue === "__original__" && originalFontBytes){
-      try{
-        const font = await workingDoc.embedFont(originalFontBytes, { subset: true });
-        if(fontFullySupportsText(font, newText)) return { font, warning: null };
-        warning = "ฟอนต์ต้นฉบับไม่มีตัวอักษรบางตัวในข้อความนี้ ใช้ฟอนต์สำรองแทน";
-      }catch(e){ /* fall through to built-in list */ }
-    }
-
-    const baseKey = (selectedValue === "__original__" || !selectedValue)
-      ? (lastFontKey || "sarabun") : selectedValue;
     lastFontKey = baseKey;
     lastBold = wantBold;
-    let fontKey = resolveFontKey(baseKey, wantBold);
-    let font = await getEmbeddedFont(fontKey);
-    // Standard fonts only cover Latin text — never let Thai (or other
-    // unsupported characters) turn into blanks; use Sarabun for those lines.
-    if(isStdFontKey(fontKey) && !fontFullySupportsText(font, newText)){
-      warning = "ฟอนต์ที่เลือกไม่รองรับตัวอักษรบางตัวในข้อความนี้ (เช่น ภาษาไทย) ใช้ Sarabun แทน";
-      lastFontKey = "sarabun";
-      fontKey = resolveFontKey("sarabun", wantBold);
-      font = await getEmbeddedFont(fontKey);
-    }
-    return { font, warning };
+    const res = await fontForText(baseKey, wantBold, newText);
+    let warning = res.warning, text = newText;
+    try{
+      const set = new Set(res.font.getCharacterSet());
+      const missing = [];
+      text = Array.from(newText).filter(ch=>{
+        const cp = ch.codePointAt(0);
+        if(LAYOUT_CHARS.has(cp) || set.has(cp)) return true;
+        if(missing.indexOf(ch) === -1) missing.push(ch);
+        return false;
+      }).join("");
+      if(missing.length){
+        // tidy the gap a dropped symbol leaves behind ("✓ ok" -> "ok")
+        text = text.replace(/[ \t]{2,}/g, " ").replace(/^[ \t]+|[ \t]+$/gm, "");
+        const msg = "ตัวอักษร " + missing.join(" ") + " ไม่มีในฟอนต์ จึงไม่ได้ใส่ (เครื่องหมาย ✓ ✗ ☐ ใช้โหมด + เพิ่มสัญลักษณ์ แทน)";
+        warning = warning ? warning + " · " + msg : msg;
+      }
+    }catch(e){ text = newText; }
+    return { font: res.font, warning, sizeScale: res.sizeScale || 1, text };
   }
 
   function hexToRgb01(hex){
@@ -2283,6 +3046,57 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // already means "this is the text's left/center/right edge" — the same
   // anchor is used for every align value, matching computeAlignedX()'s
   // refWidth===null branch.
+  // Live preview fonts: built-in fonts get a CSS @font-face made from the
+  // same bytes that will be embedded, so the preview box shows what saving
+  // will actually draw (it used to fall back to the page's own UI font).
+  const _builtinCss = {};
+  function builtinCssFamily(key){
+    if(_builtinCss[key] !== undefined) return _builtinCss[key];
+    const list = window.__QE_FONTS || [];
+    const reg = list.find(f => f.key === key && !f.bold);
+    if(!reg){ _builtinCss[key] = ""; return ""; }
+    const fam = "qe-builtin-" + key;
+    try{
+      const add = (entry, weight)=>{
+        const ff = new FontFace(fam, qeFontBytes(entry.key).slice(0), { weight });
+        document.fonts.add(ff);
+        ff.load().then(()=> updatePreview()).catch(()=>{});
+      };
+      add(reg, "400");
+      const b = list.find(f => f.bold && f.base === key);
+      if(b) add(b, "700");
+    }catch(e){ _builtinCss[key] = ""; return ""; }
+    _builtinCss[key] = "'" + fam + "'";
+    return _builtinCss[key];
+  }
+  const STD_CSS = { "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" };
+  function cssFamilyForKey(key){
+    if(STD_CSS[key]) return STD_CSS[key];
+    if(extraFonts.has(key)) return extraFonts.get(key).cssFamily || "";
+    return builtinCssFamily(key);
+  }
+  // Same letter-height matching the save path applies (fontForText), cached
+  // per font pair so typing stays instant; computed once in the background.
+  const _previewScale = {};
+  function previewScaleFor(entryKey, fbKey, wantBold, text){
+    const thai = THAI_CHAR_RE.test(text || "") || !/[a-z]/i.test(text || "");
+    const id = entryKey + "|" + fbKey + "|" + (wantBold ? 1 : 0) + "|" + (thai ? "th" : "la");
+    if(_previewScale[id] !== undefined) return _previewScale[id] || 1;
+    _previewScale[id] = 0; // pending
+    (async ()=>{
+      let sc = 1;
+      try{
+        if(!isStdFontKey(fbKey)){
+          const fbFk = fontkit.create(qeFontBytes(resolveFontKey(fbKey, wantBold)));
+          sc = await scaleFromFonts(extraFonts.get(entryKey), fbFk, null, text);
+        }
+      }catch(e){ sc = 1; }
+      _previewScale[id] = Math.abs(sc - 1) > 0.03 ? sc : 1;
+      updatePreview();
+    })();
+    return 1;
+  }
+
   function updatePreview(){
     if(!previewEl) return;
     const editing = !!activeItem, inserting = !!insertPos;
@@ -2300,12 +3114,31 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     // it 2-4x bigger than the real thing — exactly the "text jumps huge the
     // instant I click it" bug. Let it go as small as the math says; only
     // guard the degenerate 0-or-negative case (bad/empty input).
-    const sizePx = Math.max(0.5, size * pageScale);
+    // Preview what saving will really draw: a detected font that lacks some
+    // of the typed characters is swapped for its built-in fallback (with the
+    // same letter-height scaling), exactly like fontForText does on save.
+    const wantBoldPv = !!(boldCheckbox && boldCheckbox.checked);
+    let previewKey = fontSelect.value, previewScale = 1;
+    const pvEntry = extraFonts.get(previewKey);
+    if(pvEntry && pvEntry.charSet && !charSetCovers(pvEntry.charSet, textarea.value)){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, wantBoldPv, textarea.value);
+      previewKey = fb;
+    }else if(pvEntry && wantBoldPv && !pvEntry.bold && !(pvEntry.boldKey && extraFonts.has(pvEntry.boldKey))){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, true, textarea.value);
+      previewKey = fb;
+    }else if(pvEntry && !wantBoldPv && pvEntry.bold && !(pvEntry.regularKey && extraFonts.has(pvEntry.regularKey))){
+      const fb = pvEntry.fallbackKey || "sarabun";
+      previewScale = previewScaleFor(previewKey, fb, false, textarea.value);
+      previewKey = fb;
+    }
+    const sizePx = Math.max(0.5, size * previewScale * pageScale);
     const align = getSelectedAlign();
 
     previewEl.textContent = textarea.value;
     previewEl.style.color = colorInput.value || "#000000";
-    previewEl.style.fontFamily = ({ "std:sans": "Arial, Helvetica, sans-serif", "std:serif": "'Times New Roman', Times, serif", "std:mono": "'Courier New', Courier, monospace" })[fontSelect.value] || "";
+    previewEl.style.fontFamily = cssFamilyForKey(previewKey) || "";
     previewEl.style.fontWeight = (boldCheckbox && boldCheckbox.checked) ? "700" : "400";
     previewEl.style.fontStyle = (italicCheckbox && italicCheckbox.checked) ? "italic" : "normal";
     previewEl.style.textDecoration = (underlineCheckbox && underlineCheckbox.checked) ? "underline" : "none";
@@ -2417,6 +3250,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // settled, and (2) a ResizeObserver that re-clamps whenever the popover's
   // box size changes afterwards (e.g. the async original-font hint text
   // appearing under the font select).
+  // The edit card is docked beside the document; on narrow screens it sits
+  // below it instead, so bring it into view when it opens.
+  function revealDockedEditor(){
+    if(!popover || !popover.classList.contains("qe-docked")) return;
+    if(!window.matchMedia("(max-width:1100px)").matches) return;
+    requestAnimationFrame(()=> popover.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }
   function repositionPopoverSoon(){
     requestAnimationFrame(()=>{
       requestAnimationFrame(()=>{
@@ -2458,21 +3298,30 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(colorLabel) colorLabel.textContent = "สี";
     textarea.value = "";
     fontsizeInput.value = lastInsertSize;
-    removeSpecialFontOption("__original__");
     if(fontHintEl) fontHintEl.textContent = "";
+    if(localFontBtn) localFontBtn.hidden = true;
     fontSelect.value = lastFontKey;
-    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.selectedIndex = 0;
+    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.value = "sarabun";
     if(boldCheckbox) boldCheckbox.checked = lastBold;
     if(italicCheckbox) italicCheckbox.checked = lastItalic;
     if(underlineCheckbox) underlineCheckbox.checked = lastUnderline;
     setAlignUI(lastAlign);
     colorInput.value = lastInsertColor;
+    const near = nearestTextItem(x, yBaseline);
+    if(near){
+      const t = near.transform;
+      const nearSize = Math.hypot(t[2], t[3]);
+      if(nearSize > 0) fontsizeInput.value = Math.round(nearSize * 10) / 10;
+      try{ colorInput.value = rgbToHex(sampleInkColor(near, sampleBgColor(t[4], t[5], nearSize))); }catch(e){}
+    }
     popover.classList.remove("qe-sidepanel-empty");
     popover.hidden = false;
     positionPopoverNear(x, yBaseline);
     repositionPopoverSoon();
+    revealDockedEditor();
     textarea.focus();
     updatePreview();
+    if(near) tryDetectOriginalFont(near, { insert: true }); // best-effort, non-blocking
   }
 
   function openPopover(item, div){
@@ -2482,13 +3331,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     if(popoverHead) popoverHead.textContent = "แก้ไขข้อความ";
     if(deleteBtn) deleteBtn.style.display = "";
     if(colorLabel) colorLabel.textContent = "สี (ดูดจากต้นฉบับ)";
-    textarea.value = item.str;
+    textarea.value = cleanExtractedText(item.str);
     const approxSize = Math.hypot(item.transform[2], item.transform[3]) || 12;
     fontsizeInput.value = Math.round(approxSize*10)/10;
-    removeSpecialFontOption("__original__");
     if(fontHintEl) fontHintEl.textContent = "";
+    if(localFontBtn) localFontBtn.hidden = true;
     fontSelect.value = lastFontKey;
-    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.selectedIndex = 0;
+    if(fontSelect.value !== lastFontKey && fontSelect.options.length) fontSelect.value = "sarabun";
     if(boldCheckbox) boldCheckbox.checked = lastBold;
     if(italicCheckbox) italicCheckbox.checked = lastItalic;
     if(underlineCheckbox) underlineCheckbox.checked = lastUnderline;
@@ -2502,6 +3351,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     popover.hidden = false;
     positionPopoverNear(tx0[4], tx0[5]);
     repositionPopoverSoon();
+    revealDockedEditor();
     textarea.focus();
     textarea.select();
     updatePreview();
@@ -2607,7 +3457,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
 
   async function renderCurrentPage(){
-    const { canvas, numPages: n, doc: pdfjsDoc, scale } = await renderPageCanvas(workingBytes, currentPage, RENDER_WIDTH);
+    // fontExtraProperties keeps pdf.js's decoded copy of each embedded font
+    // (plus its code/Unicode tables) — used by recoverPdfjsFont().
+    const { canvas, numPages: n, doc: pdfjsDoc, scale } = await renderPageCanvas(workingBytes, currentPage, RENDER_WIDTH, { fontExtraProperties: true });
     numPages = n; pageScale = scale;
     canvasEl.width = canvas.width; canvasEl.height = canvas.height;
     canvasEl.getContext("2d").drawImage(canvas, 0, 0);
@@ -2615,11 +3467,18 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     stageEl.style.height = canvas.height + "px";
 
     const page = await pdfjsDoc.getPage(currentPage);
+    // Every render opens a fresh pdf.js document; free the one before the
+    // previous (not the previous itself, in case a click is still reading
+    // fonts from it) so memory doesn't grow with every edit/page turn.
+    if(retiredPjsDoc && retiredPjsDoc !== pdfjsDoc){ try{ retiredPjsDoc.destroy(); }catch(e){} }
+    retiredPjsDoc = (currentPjsDoc && currentPjsDoc !== pdfjsDoc) ? currentPjsDoc : null;
+    currentPjsDoc = pdfjsDoc; currentPjsPage = page;
     const viewport = page.getViewport({ scale: pageScale });
     pageOriginX = (viewport.viewBox && viewport.viewBox[0]) || 0;
     pageOriginY = (viewport.viewBox && viewport.viewBox[1]) || 0;
     currentViewport = viewport; currentPageRotation = page.rotate || 0;
     const textContent = await page.getTextContent();
+    currentTextItems = textContent.items;
 
     textLayerEl.innerHTML = "";
     textLayerEl.style.width = canvas.width + "px";
@@ -2843,6 +3702,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       qeFontCache = {};
       workingBytes = originalBuffer.slice(0);
       currentPage = 1;
+      clearDocumentFonts();
       insertedMeta.clear();
       insertedSymbols.clear();
       clearHistory();
@@ -2939,6 +3799,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       stampSymbolAt(xPdf, yPdf);
     } else {
       openInsertPopover(xPdf, yPdf, e);
+      if(insertPos && currentPageRotation % 360){
+        const [rx, ry] = canvasPxToRaw(px, py);
+        insertPos.raw = { x: rx, y: ry, rot: ((currentPageRotation % 360) + 360) % 360 };
+      }
     }
   });
 
@@ -2965,6 +3829,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   //   anchor IS the point the user clicked/dropped the text at, and align
   //   decides what that point means relative to the text — its left edge,
   //   center, or right edge.
+  // Direction of a pdf.js text item in raw page space, in degrees CCW
+  // (0 for ordinary horizontal text). Snapped to the nearest degree so tiny
+  // float noise doesn't add a needless rotation operator.
+  function itemAngleDeg(item){
+    const tx = item && item.transform; if(!tx) return 0;
+    const a = Math.round(Math.atan2(tx[1], tx[0]) * 180 / Math.PI);
+    return ((a % 360) + 360) % 360;
+  }
+  // Screen (canvas-pixel) point/delta -> raw PDF point, honoring /Rotate.
+  function canvasPxToRaw(px, py){
+    if(currentViewport && currentViewport.convertToPdfPoint) return currentViewport.convertToPdfPoint(px, py);
+    return [px / pageScale + pageOriginX, (canvasEl.height - py) / pageScale + pageOriginY];
+  }
   function computeAlignedX(anchorX, align, textWidth, refWidth){
     if(refWidth == null){
       if(align === "center") return anchorX - textWidth/2;
@@ -2996,7 +3873,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const ITALIC_SKEW_DEGREES = 12;
   function drawStyledText(page, text, opts){
     const width = measureTextWidth(opts.font, text, opts.size);
+    // opts.rotate (degrees, counter-clockwise in raw page space) keeps text
+    // upright on pages that carry their own /Rotate, and keeps an edited
+    // run in the same direction as the original rotated text.
+    const rot = opts.rotate || 0;
     const drawOpts = { x: opts.x, y: opts.y, size: opts.size, font: opts.font, color: opts.color };
+    if(rot) drawOpts.rotate = degrees(rot);
     if(opts.italic) drawOpts.ySkew = degrees(ITALIC_SKEW_DEGREES);
     page.drawText(text, drawOpts);
     if(opts.underline){
@@ -3006,11 +3888,9 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // flush under slanted text instead of sitting at a fixed horizontal
       // offset that only lines up with upright text.
       const skewPx = opts.italic ? Math.tan(ITALIC_SKEW_DEGREES * Math.PI / 180) * offset : 0;
-      page.drawLine({
-        start: { x: opts.x + skewPx, y: opts.y - offset },
-        end: { x: opts.x + skewPx + width, y: opts.y - offset },
-        thickness, color: opts.color,
-      });
+      const c = Math.cos(rot * Math.PI / 180), sn = Math.sin(rot * Math.PI / 180);
+      const at = (u, v)=>({ x: opts.x + u*c - v*sn, y: opts.y + u*sn + v*c });
+      page.drawLine({ start: at(skewPx, -offset), end: at(skewPx + width, -offset), thickness, color: opts.color });
     }
     return width;
   }
@@ -3116,6 +3996,87 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }catch(e){ return { r:1, g:1, b:1 }; }
   }
 
+  // Placed symbols are wrapped in their own marked-content block
+  // ("q /LyraSym… BMC … EMC Q") so deleting or moving one can take exactly
+  // those drawing operators back OUT of the page's content stream. The old
+  // approach — painting a background-colored box over the symbol — left
+  // visible gray/white squares wherever the symbol sat on a table line or a
+  // shaded cell. The cover box is only kept as a fallback for symbols that
+  // were placed before this existed (no tag) or whose block can't be found.
+  function newSymbolTag(){
+    return "LyraSym" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function drawTaggedSymbol(page, meta, cx, cy){
+    const spec = SYMBOL_SPECS[meta.symbolKey];
+    if(!spec) return;
+    const { r, g, b } = hexToRgb01(meta.color);
+    page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.beginMarkedContent(meta.tag));
+    spec.draw(page, cx - meta.size/2, cy - meta.size/2, meta.size, rgb(r, g, b));
+    page.pushOperators(PDFLib.endMarkedContent(), PDFLib.popGraphicsState());
+  }
+  function bytesToLatin1(bytes){
+    let out = "";
+    for(let i=0; i<bytes.length; i+=0x8000) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return out;
+  }
+  function latin1ToBytes(str){
+    const out = new Uint8Array(str.length);
+    for(let i=0; i<str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+    return out;
+  }
+  // Finds "q /TAG BMC … EMC Q" (the EMC that closes THIS block, skipping any
+  // nested marked content) and returns [start, end) or null.
+  function findTaggedBlock(text, tag){
+    const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const open = new RegExp("(?:\\bq\\s+)?\\/" + esc + "\\s+BMC\\b").exec(text);
+    if(!open) return null;
+    const re = /\b(BMC|BDC|EMC)\b/g;
+    re.lastIndex = open.index + open[0].length;
+    let depth = 1, m;
+    while((m = re.exec(text))){
+      if(m[1] === "EMC"){ if(--depth === 0) break; }
+      else depth++;
+    }
+    if(!m) return null;
+    let end = m.index + 3;
+    const tail = /^\s*Q\b/.exec(text.slice(end));
+    if(tail && /^\s*q\s/.test(open[0])) end += tail[0].length;
+    return [open.index, end];
+  }
+  function removeTaggedSymbol(doc, page, tag){
+    if(!tag) return false;
+    try{
+      const context = doc.context;
+      const raw = page.node.get(PDFName.of("Contents"));
+      if(!raw) return false;
+      const lookedUp = context.lookup(raw);
+      const refs = lookedUp instanceof PDFArray ? lookedUp.asArray() : [raw];
+      for(const ref of refs){
+        const stream = context.lookup(ref);
+        if(!(stream instanceof PDFRawStream)) continue;
+        const text = bytesToLatin1(decodePDFRawStream(stream).decode());
+        const span = findTaggedBlock(text, tag);
+        if(!span) continue;
+        const next = text.slice(0, span[0]) + text.slice(span[1]);
+        const newStream = context.flateStream(latin1ToBytes(next));
+        if(ref instanceof PDFLib.PDFRef) context.assign(ref, newStream);
+        else page.node.set(PDFName.of("Contents"), context.register(newStream));
+        return true;
+      }
+    }catch(e){ /* fall back to the cover box */ }
+    return false;
+  }
+  function coverSymbolBox(page, meta){
+    const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
+    const fill = sampleBgColorForBox(boxX, boxY, meta.size);
+    const pad = Math.max(1, meta.size * 0.08);
+    page.drawRectangle({
+      x: boxX - pad, y: boxY - pad,
+      width: meta.size + pad*2, height: meta.size + pad*2,
+      color: rgb(fill.r, fill.g, fill.b),
+    });
+  }
+
   // Stamps the currently-selected symbol centered on the clicked point
   // (xPdf,yPdf) — "click = where you're stamping", unlike inserted text's
   // baseline-left click convention, since a symbol has no natural reading
@@ -3136,10 +4097,10 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const { r, g, b } = hexToRgb01(color);
-      spec.draw(page, xPdf - size/2, yPdf - size/2, size, rgb(r, g, b));
+      const meta = { symbolKey: selectedSymbolKey, size, color, x: xPdf, y: yPdf, tag: newSymbolTag() };
+      drawTaggedSymbol(page, meta, xPdf, yPdf);
       workingBytes = await workingDoc.save();
-      insertedSymbols.set(originKey(xPdf, yPdf), { symbolKey: selectedSymbolKey, size, color, x: xPdf, y: yPdf });
+      insertedSymbols.set(originKey(xPdf, yPdf), meta);
       await renderCurrentPage();
       setStatus(status, "แทรกสัญลักษณ์แล้ว", "ok");
     }catch(e){
@@ -3256,14 +4217,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const boxX = meta.x - meta.size/2, boxY = meta.y - meta.size/2;
-      const fill = sampleBgColorForBox(boxX, boxY, meta.size);
-      const pad = Math.max(1, meta.size * 0.08);
-      page.drawRectangle({
-        x: boxX - pad, y: boxY - pad,
-        width: meta.size + pad*2, height: meta.size + pad*2,
-        color: rgb(fill.r, fill.g, fill.b),
-      });
+      if(!removeTaggedSymbol(workingDoc, page, meta.tag)) coverSymbolBox(page, meta);
       workingBytes = await workingDoc.save();
       await renderCurrentPage();
       setStatus(status, "ลบสัญลักษณ์แล้ว", "ok");
@@ -3294,18 +4248,29 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      const { font, warning } = await resolveEditFont(newText);
+      const { font, warning, sizeScale, text: drawText } = await resolveEditFont(newText);
+      if(!drawText.trim()) throw new Error(warning || "ไม่มีตัวอักษรที่ฟอนต์วาดได้");
+      const drawSize = size * sizeScale;
       const { r: tr, g: tg, b: tb } = hexToRgb01(lastInsertColor);
-      const textWidth = measureTextWidth(font, newText, size);
+      const textWidth = measureTextWidth(font, drawText, drawSize);
       // computeAlignedX may shift the glyph's actual left edge away from the
       // clicked anchor (center/right align) — insertedMeta must be keyed by
       // that ACTUAL drawn position, since that's what pdf.js will report as
       // this item's transform[4] on the next render, and hit-testing/drag
       // both look items up by that reported position, not the click point.
-      const drawX = computeAlignedX(pos.x, align, textWidth, null);
-      drawStyledText(page, newText, { x: drawX, y: pos.yBaseline, size, font, color: rgb(tr, tg, tb), italic, underline });
+      let drawX = computeAlignedX(pos.x, align, textWidth, null), drawY = pos.yBaseline, drawRot = 0;
+      if(pos.raw){
+        // Rotated page: anchor at the raw point under the click and turn the
+        // run by the page's /Rotate so it reads upright on screen. The align
+        // shift moves along the text's own direction.
+        drawRot = pos.raw.rot;
+        const shift = computeAlignedX(0, align, textWidth, null);
+        const c = Math.cos(drawRot * Math.PI / 180), sn = Math.sin(drawRot * Math.PI / 180);
+        drawX = pos.raw.x + shift * c; drawY = pos.raw.y + shift * sn;
+      }
+      drawStyledText(page, drawText, { x: drawX, y: drawY, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline, rotate: drawRot });
       workingBytes = await workingDoc.save();
-      insertedMeta.set(originKey(drawX, pos.yBaseline), { text: newText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: lastInsertColor });
+      insertedMeta.set(originKey(drawX, drawY), { text: drawText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: lastInsertColor });
       await renderCurrentPage();
       setStatus(status, warning ? ("เพิ่มข้อความแล้ว (" + warning + ")") : "เพิ่มข้อความแล้ว", warning ? "warn" : "ok");
     }catch(e){
@@ -3320,11 +4285,19 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // the box's own click listener) rather than a drag, so short accidental
   // wiggles between mousedown/mouseup don't move anything.
   const DRAG_THRESHOLD = 4;
+  function clearTextSelection(){
+    try{ const sel = window.getSelection && window.getSelection(); if(sel && sel.rangeCount) sel.removeAllRanges(); }catch(e){}
+  }
   function wireDrag(div, item, key){
     div.style.touchAction = "none";
     div.addEventListener("pointerdown", (e)=>{
       if(e.button !== 0) return;
       e.stopPropagation();
+      // stop the browser from starting a text selection on the hidden
+      // text layer (it showed up as white-on-blue "ghost" letters while
+      // dragging and could linger over the moved text afterwards)
+      e.preventDefault();
+      clearTextSelection();
       const startX = e.clientX, startY = e.clientY;
       const baseTransform = div.style.transform;
       const rect = canvasEl.getBoundingClientRect();
@@ -3346,15 +4319,18 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         div.removeEventListener("pointerup", onUp);
         div.removeEventListener("pointercancel", onUp);
         div.classList.remove("qe-box-dragging");
+        clearTextSelection();
         if(!dragging) return; // plain click — let the normal click handler run
         suppressNextClick = true;
         const dxCss = ev.clientX - startX, dyCss = ev.clientY - startY;
-        const dxPdf = (dxCss * scaleX) / pageScale;
-        const dyPdf = -(dyCss * scaleY) / pageScale; // screen Y grows down, PDF Y grows up
-        const pageWidthPdf = canvasEl.width / pageScale, pageHeightPdf = canvasEl.height / pageScale;
+        // Map the screen delta into raw page space through the viewport, so
+        // a drag on a page with /Rotate moves the text the way the mouse went.
+        const [ax, ay] = canvasPxToRaw(0, 0), [bx, by] = canvasPxToRaw(dxCss * scaleX, dyCss * scaleY);
+        const dxPdf = bx - ax, dyPdf = by - ay;
+        const vb = (currentViewport && currentViewport.viewBox) || [pageOriginX, pageOriginY, pageOriginX + canvasEl.width / pageScale, pageOriginY + canvasEl.height / pageScale];
         const oldX = item.transform[4], oldY = item.transform[5];
-        const newX = Math.max(pageOriginX, Math.min(pageOriginX + pageWidthPdf - 2, oldX + dxPdf));
-        const newY = Math.max(pageOriginY, Math.min(pageOriginY + pageHeightPdf - 2, oldY + dyPdf));
+        const newX = Math.max(vb[0], Math.min(vb[2] - 2, oldX + dxPdf));
+        const newY = Math.max(vb[1], Math.min(vb[3] - 2, oldY + dyPdf));
         moveInsertedText(key, item, newX, newY);
       }
       div.addEventListener("pointermove", onMove);
@@ -3395,12 +4371,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
           color: rgb(fill.r, fill.g, fill.b),
         });
       }
-      let fontKey = resolveFontKey(meta.fontKey, meta.bold);
-      let font = await getEmbeddedFont(fontKey);
-      if(isStdFontKey(fontKey) && !fontFullySupportsText(font, meta.text)){
-        fontKey = resolveFontKey("sarabun", meta.bold);
-        font = await getEmbeddedFont(fontKey);
-      }
+      const { font, sizeScale: dragScale } = await fontForText(meta.fontKey, meta.bold, meta.text);
       const { r: tr, g: tg, b: tb } = hexToRgb01(meta.color);
       // A drag translates the already-rendered glyph directly by the mouse
       // delta (newX/newY is that glyph's new left edge/baseline) — it does
@@ -3409,7 +4380,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       // baked into the glyph's position, so dragging always draws left-
       // anchored at the literal drop point, same as before this feature;
       // only italic/underline styling is new here.
-      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size, font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline });
+      drawStyledText(page, meta.text, { x: newX, y: newY, size: meta.size * (dragScale || 1), font, color: rgb(tr, tg, tb), italic: !!meta.italic, underline: !!meta.underline, rotate: itemAngleDeg(item) });
       workingBytes = await workingDoc.save();
       insertedMeta.set(originKey(newX, newY), meta);
       await renderCurrentPage();
@@ -3479,22 +4450,12 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       workingDoc.registerFontkit(fontkit);
       qeFontCache = {};
       const page = workingDoc.getPage(currentPage - 1);
-      // Erase the old position the same way deleteInsertedSymbol does (a
-      // sampled-background cover rectangle — these are vector graphics, not
-      // a text run, so there's no Tj/TJ operator to surgically remove).
-      const oldBoxX = meta.x - meta.size/2, oldBoxY = meta.y - meta.size/2;
-      const fill = sampleBgColorForBox(oldBoxX, oldBoxY, meta.size);
-      const pad = Math.max(1, meta.size * 0.08);
-      page.drawRectangle({
-        x: oldBoxX - pad, y: oldBoxY - pad,
-        width: meta.size + pad*2, height: meta.size + pad*2,
-        color: rgb(fill.r, fill.g, fill.b),
-      });
-      const spec = SYMBOL_SPECS[meta.symbolKey];
-      const { r, g, b } = hexToRgb01(meta.color);
-      if(spec) spec.draw(page, newX - meta.size/2, newY - meta.size/2, meta.size, rgb(r, g, b));
+      // take the old drawing out (see removeTaggedSymbol), then draw it again at the new spot
+      if(!removeTaggedSymbol(workingDoc, page, meta.tag)) coverSymbolBox(page, meta);
+      const moved = Object.assign({}, meta, { x: newX, y: newY, tag: newSymbolTag() });
+      drawTaggedSymbol(page, moved, newX, newY);
       workingBytes = await workingDoc.save();
-      insertedSymbols.set(originKey(newX, newY), Object.assign({}, meta, { x: newX, y: newY }));
+      insertedSymbols.set(originKey(newX, newY), moved);
       await renderCurrentPage();
       setStatus(status, "ย้ายสัญลักษณ์แล้ว", "ok");
     }catch(e){
@@ -3557,24 +4518,31 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       let fontWarning = null;
       let drawX = x;
       if(newText.trim() !== ""){
-        const { font, warning } = await resolveEditFont(newText);
+        const { font, warning, sizeScale, text: drawText } = await resolveEditFont(newText);
+        const drawSize = size * sizeScale;
         fontWarning = warning;
         const { r: tr, g: tg, b: tb } = hexToRgb01(colorInput.value);
         // Align within the ORIGINAL text item's own box span (its left edge
         // to left+width) — same idea as aligning text inside a fixed text
         // box, using the box this text already occupied on the page.
-        const textWidth = measureTextWidth(font, newText, size);
-        drawX = computeAlignedX(x, align, textWidth, width);
-        drawStyledText(page, newText, { x: drawX, y: yBaseline, size, font, color: rgb(tr, tg, tb), italic, underline });
+        const textWidth = measureTextWidth(font, drawText, drawSize);
+        const editRot = itemAngleDeg(item);
+        if(editRot){
+          // rotated run: keep its direction; align shift goes along it
+          const shift = computeAlignedX(0, align, textWidth, width);
+          drawX = x + shift * Math.cos(editRot * Math.PI / 180);
+          drawStyledText(page, drawText, { x: drawX, y: yBaseline + shift * Math.sin(editRot * Math.PI / 180), size: drawSize, font, color: rgb(tr, tg, tb), italic, underline, rotate: editRot });
+        }else{
+          drawX = computeAlignedX(x, align, textWidth, width);
+          drawStyledText(page, drawText, { x: drawX, y: yBaseline, size: drawSize, font, color: rgb(tr, tg, tb), italic, underline });
+        }
       }
       // Keep drag tracking in sync: this edit reuses the same origin, so a
       // box that was already draggable (came from "+ เพิ่มข้อความ", or a
       // previous edit that kept it tracked) stays draggable with its
-      // appearance refreshed to match what was just saved — unless the user
-      // picked "ฟอนต์ต้นฉบับ" (the auto-detected original-font option),
-      // whose raw font bytes aren't kept around for a future drag to reuse;
-      // in that one case drop tracking rather than risk redrawing a future
-      // drag in the wrong font.
+      // appearance refreshed to match what was just saved (detected fonts —
+      // this computer's or the document's own — stay registered in
+      // extraFonts, so a later drag redraws in the same font).
       const editKey = originKey(x, yBaseline);
       if(insertedMeta.has(editKey)){
         insertedMeta.delete(editKey);
@@ -3582,7 +4550,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         // x when center/right-aligned) — pdf.js will report the redrawn
         // glyph's own transform[4] there on the next render, and that's what
         // hit-testing/dragging look items up by.
-        if(newText.trim() !== "" && fontSelect.value !== "__original__"){
+        if(newText.trim() !== ""){
           insertedMeta.set(originKey(drawX, yBaseline), { text: newText, size, fontKey: lastFontKey, bold: lastBold, italic, underline, align, color: colorInput.value });
         }
       }
@@ -5018,6 +5986,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   const numwarnTextEl = document.getElementById("ocr-numwarn-text");
   const result = document.getElementById("ocr-result");
   const downloadTextBtn = document.getElementById("ocr-download-text");
+  const downloadTxtBtn = document.getElementById("ocr-download-txt");
   const filenameInput = document.getElementById("ocr-filename-input");
   const filenameExtEl = document.getElementById("ocr-filename-ext");
   const filenameLabelEl = document.getElementById("ocr-filename-label");
@@ -5435,7 +6404,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
         setStatus(status, cancelledOverall ? "หยุดก่อนได้ผลลัพธ์ใดๆ" : "เกิดข้อผิดพลาด ไม่มีไฟล์ที่ทำสำเร็จ", cancelledOverall ? "warn" : "err");
       }else if(items.length === 1){
         const it = doneItems[0];
-        filenameExtEl.textContent = ".docx";
+        filenameExtEl.textContent = ".docx / .txt";
         filenameLabelEl.textContent = "ชื่อไฟล์ก่อนดาวน์โหลด";
         setFilenameDefault(filenameInput, `${it.fileName}_ocr_text`);
         result.querySelector(".stats").innerHTML = it.statsText;
@@ -5485,7 +6454,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       lines.forEach((line, li)=>{
         children.push(new Paragraph({
           pageBreakBefore: p > 0 && li === 0,
-          children: [ new TextRun({ text: stripXmlIllegalChars(line) || " ", font: "Tahoma", size: 24 }) ],
+          children: [ new TextRun({ text: stripXmlIllegalChars(line).replace(/\u0E4D\u0E32/g, "\u0E33") || " ", font: "Tahoma", size: 24 }) ],
         }));
       });
     }
@@ -5520,6 +6489,41 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     }
     downloadTextBtn.disabled = false;
   };
+
+  // "ดาวน์โหลดข้อความ (.txt)" — the same OCR text as plain text: UTF-8 with
+  // a BOM and Windows line endings so Thai shows correctly when opened in
+  // Notepad/Excel on Windows; each page starts with a "=== หน้า N ===" line.
+  function buildOcrText(it){
+    const total = it.total || (it.pageTexts ? it.pageTexts.length : 0);
+    const parts = [];
+    for(let p = 0; p < total; p++){
+      const pageText = (it.pageTexts && it.pageTexts[p]) ? it.pageTexts[p] : "";
+      const clean = stripXmlIllegalChars(pageText).replace(/\u0E4D\u0E32/g, "\u0E33").replace(/\r?\n/g, "\r\n").trimEnd(); // OCR spells SARA AM as NIKHAHIT+SARA AA
+      parts.push((total > 1 ? "=== หน้า " + (p + 1) + " ===\r\n" : "") + clean);
+    }
+    return new Blob(["\uFEFF" + parts.join("\r\n\r\n") + "\r\n"], { type: "text/plain;charset=utf-8" });
+  }
+  if(downloadTxtBtn){
+    downloadTxtBtn.onclick = async ()=>{
+      if(!lastDoneItems.length || downloadTxtBtn.disabled) return;
+      downloadTxtBtn.disabled = true;
+      try{
+        if(lastDoneItems.length === 1){
+          const it = lastDoneItems[0];
+          downloadBlob(buildOcrText(it), resolveFilename(filenameInput, `${it.fileName}_ocr_text`, ".txt"));
+        }else{
+          const zip = new JSZip();
+          for(const it of lastDoneItems) zip.file(`${sanitizeFilename(it.fileName)}_ocr_text.txt`, buildOcrText(it));
+          const zipBlob = await zip.generateAsync({ type:"blob" });
+          downloadBlob(zipBlob, resolveFilename(filenameInput, "ocr_text_results", ".zip"));
+        }
+        setStatus(status, "ดาวน์โหลดไฟล์ข้อความ (.txt) แล้ว", "ok");
+      }catch(e){
+        setStatus(status, "สร้างไฟล์ .txt ไม่สำเร็จ: " + e.message, "err");
+      }
+      downloadTxtBtn.disabled = false;
+    };
+  }
 })();
 
 /* ================= JPG TO PDF ================= */
@@ -5635,6 +6639,187 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     runBtn.disabled = items.length === 0;
   };
   downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, "images", ".pdf")); };
+})();
+
+/* ================= PDF TO JPG ================= */
+(function(){
+  const drop = document.getElementById("pdfjpg-drop");
+  if(!drop) return;
+  const input = document.getElementById("pdfjpg-input");
+  const body = document.getElementById("pdfjpg-body");
+  const grid = document.getElementById("pdfjpg-grid");
+  const rangeInput = document.getElementById("pdfjpg-range");
+  const allBtn = document.getElementById("pdfjpg-all");
+  const noneBtn = document.getElementById("pdfjpg-none");
+  const formatSel = document.getElementById("pdfjpg-format");
+  const dpiSel = document.getElementById("pdfjpg-dpi");
+  const qualityField = document.getElementById("pdfjpg-quality-field");
+  const qRange = document.getElementById("pdfjpg-quality");
+  const qVal = document.getElementById("pdfjpg-q-val");
+  const runBtn = document.getElementById("pdfjpg-run");
+  const progress = document.getElementById("pdfjpg-progress");
+  const status = document.getElementById("pdfjpg-status");
+  const result = document.getElementById("pdfjpg-result");
+  const downloadBtn = document.getElementById("pdfjpg-download");
+  const filenameEl = document.getElementById("pdfjpg-filename");
+  const filenameInput = document.getElementById("pdfjpg-filename-input");
+  const filenameExtEl = document.getElementById("pdfjpg-filename-ext");
+  const removeBtn = document.getElementById("pdfjpg-remove");
+
+  let buffer = null, fileName = "document", numPages = 0, selected = new Set();
+  let outputBlob = null, outputBase = "", outputExt = ".zip";
+  let loadSeq = 0;
+  // Browsers refuse canvases much past ~16k px per side / ~268M px² (and
+  // phones far less); keep each rendered page safely below that.
+  const MAX_SIDE = 12000, MAX_AREA = 60e6;
+
+  function syncQualityField(){ qualityField.style.display = formatSel.value === "jpg" ? "" : "none"; }
+  formatSel.addEventListener("change", ()=>{ syncQualityField(); clearResult(); });
+  dpiSel.addEventListener("change", clearResult);
+  qRange.addEventListener("input", ()=>{ qVal.textContent = qRange.value + "%"; clearResult(); });
+  syncQualityField();
+
+  function clearResult(){ outputBlob = null; result.classList.remove("show"); }
+  function syncRunBtn(){ runBtn.disabled = !buffer || selected.size === 0; }
+  function syncGridFromSelection(){
+    Array.from(grid.children).forEach((cell, i)=> cell.classList.toggle("sel", selected.has(i+1)));
+    syncRunBtn(); clearResult();
+  }
+
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    if(!file) return;
+    const seq = ++loadSeq;
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    grid.innerHTML = "";
+    clearResult();
+    setStatus(status, "กำลังโหลดหน้าเอกสาร...", "loading");
+    let pdfjsDoc = null;
+    try{
+      pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      numPages = pdfjsDoc.numPages;
+      selected = new Set(Array.from({ length: numPages }, (_, i)=> i + 1)); // default: every page
+      rangeInput.value = numPages ? `1-${numPages}` : "";
+      for(let i=1; i<=numPages; i++){
+        if(seq !== loadSeq) return; // a newer file replaced this one
+        const page = await pdfjsDoc.getPage(i);
+        const viewport = page.getViewport({ scale: 70 / page.getViewport({ scale: 1 }).width });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        const cell = document.createElement("div");
+        cell.className = "pagecell sel";
+        cell.appendChild(canvas);
+        const num = document.createElement("div");
+        num.className = "num"; num.textContent = i;
+        cell.appendChild(num);
+        cell.onclick = ()=>{
+          if(selected.has(i)) selected.delete(i); else selected.add(i);
+          cell.classList.toggle("sel", selected.has(i));
+          rangeInput.value = rangesToString(Array.from(selected));
+          syncRunBtn(); clearResult();
+        };
+        grid.appendChild(cell);
+      }
+      setStatus(status, `โหลดสำเร็จ · ทั้งหมด ${numPages} หน้า`, "ok");
+    }catch(e){
+      buffer = null;
+      const msg = (e && e.name === "PasswordException")
+        ? 'ไฟล์นี้ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน'
+        : "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message);
+      setStatus(status, msg, "err");
+    }finally{
+      if(pdfjsDoc) pdfjsDoc.destroy();
+      syncRunBtn();
+    }
+  });
+
+  rangeInput.addEventListener("input", ()=>{ selected = new Set(parseRanges(rangeInput.value, numPages)); syncGridFromSelection(); });
+  allBtn.onclick = ()=>{ rangeInput.value = numPages ? `1-${numPages}` : ""; selected = new Set(parseRanges(rangeInput.value, numPages)); syncGridFromSelection(); };
+  noneBtn.onclick = ()=>{ rangeInput.value = ""; selected = new Set(); syncGridFromSelection(); };
+
+  function canvasToBlob(canvas, type, quality){
+    return new Promise((resolve, reject)=> canvas.toBlob(b => b ? resolve(b) : reject(new Error("สร้างรูปภาพไม่สำเร็จ (หน้าอาจใหญ่เกินไป ลองลดความละเอียด)")), type, quality));
+  }
+
+  runBtn.onclick = async ()=>{
+    const pages = Array.from(selected).sort((a, b)=> a - b);
+    if(!buffer || !pages.length) return;
+    const fmt = formatSel.value;
+    const mime = fmt === "png" ? "image/png" : "image/jpeg";
+    const ext = fmt === "png" ? ".png" : ".jpg";
+    const quality = parseInt(qRange.value, 10) / 100;
+    const dpi = parseInt(dpiSel.value, 10) || 150;
+    const pad = String(numPages).length;
+    runBtn.disabled = true; clearResult();
+    progress.style.display = "block"; progress.value = 0;
+    let pdfjsDoc = null;
+    try{
+      pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      const images = [];
+      let shrunk = false;
+      for(let k=0; k<pages.length; k++){
+        const n = pages[k];
+        setStatus(status, `กำลังแปลงหน้า ${n} (${k+1}/${pages.length})...`, "loading");
+        const page = await pdfjsDoc.getPage(n);
+        let scale = dpi / 72;
+        const base = page.getViewport({ scale: 1 });
+        const fit = Math.min(1, MAX_SIDE / (base.width * scale), MAX_SIDE / (base.height * scale), Math.sqrt(MAX_AREA / (base.width * base.height * scale * scale)));
+        if(fit < 1){ scale *= fit; shrunk = true; }
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+        const ctx = canvas.getContext("2d");
+        // white page like every PDF viewer shows it (a transparent PNG looks black in some apps)
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const blob = await canvasToBlob(canvas, mime, fmt === "jpg" ? quality : undefined);
+        canvas.width = canvas.height = 0; // free the pixels right away
+        page.cleanup();
+        images.push({ n, blob });
+        progress.value = Math.round(((k+1) / pages.length) * 100);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      if(images.length === 1){
+        outputBlob = images[0].blob;
+        outputExt = ext;
+        outputBase = numPages > 1 ? `${fileName}_page-${String(images[0].n).padStart(pad, "0")}` : fileName;
+      }else{
+        const zip = new JSZip();
+        images.forEach(({ n, blob })=> zip.file(`${sanitizeFilename(fileName)}_page-${String(n).padStart(pad, "0")}${ext}`, blob));
+        setStatus(status, "กำลังรวมไฟล์เป็น ZIP...", "loading");
+        outputBlob = await zip.generateAsync({ type: "blob" });
+        outputExt = ".zip";
+        outputBase = `${fileName}_${fmt}`;
+      }
+      filenameExtEl.textContent = outputExt;
+      setFilenameDefault(filenameInput, outputBase);
+      result.querySelector(".stats").innerHTML = `<b>${images.length}</b> รูป (${fmt.toUpperCase()}) · <b>${fmtBytes(outputBlob.size)}</b>`;
+      result.classList.add("show");
+      setStatus(status, shrunk ? "แปลงสำเร็จ (บางหน้าใหญ่มาก ระบบลดความละเอียดลงให้พอดี)" : "แปลงสำเร็จ", shrunk ? "warn" : "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + e.message, "err");
+    }finally{
+      if(pdfjsDoc) pdfjsDoc.destroy();
+      progress.style.display = "none";
+      syncRunBtn();
+    }
+  };
+
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, outputBase || fileName, outputExt)); };
+
+  removeBtn.onclick = ()=>{
+    loadSeq++;
+    buffer = null; numPages = 0; selected = new Set(); clearResult();
+    grid.innerHTML = ""; rangeInput.value = "";
+    body.style.display = "none"; input.value = "";
+    progress.style.display = "none";
+    setStatus(status, "", "");
+    syncRunBtn();
+  };
 })();
 
 /* ================= PDF TO WORD =================
@@ -6728,5 +7913,1284 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const ctx = canvas.getContext("2d");
     if(ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     textEl.focus();
+  };
+})();
+
+/* ================= REDACT (ถมดำข้อมูลส่วนตัว) =================
+   Finds personal data (PDPA) in PDFs — mostly CVs — lets the user review it,
+   then produces a copy where that data is really gone, not just covered:
+   every page that carries a redaction box is re-rendered to an image with
+   the boxes burned in (so no text, vector or image data survives under a
+   box), and an invisible, searchable text layer is put back for only the
+   characters that lie outside every box. Pages without boxes are copied
+   untouched. Annotations (links incl. mailto:), document info and XMP are
+   dropped because they can carry the same personal data.
+   Everything runs locally in the browser. */
+(function(){
+  const drop = document.getElementById("redact-drop");
+  if(!drop) return;
+  const $ = id => document.getElementById(id);
+  const input = $("redact-input"), body = $("redact-body"), filesBar = $("redact-files");
+  const prevBtn = $("redact-prev"), nextBtn = $("redact-next"), pageInfo = $("redact-pageinfo");
+  const stage = $("redact-stage"), canvas = $("redact-canvas"), overlay = $("redact-overlay");
+  const catsBox = $("redact-cats"), namesInput = $("redact-names"), suggestBtn = $("redact-name-suggest");
+  const styleSel = $("redact-style"), hitsList = $("redact-hits"), hitTotal = $("redact-hit-total");
+  const runBtn = $("redact-run"), progress = $("redact-progress"), status = $("redact-status");
+  const result = $("redact-result"), downloadBtn = $("redact-download");
+  const filenameInput = $("redact-filename-input"), filenameExt = $("redact-filename-ext");
+
+  const CAT_LABEL = {
+    idcard: "เลขบัตร/พาสปอร์ต", phone: "เบอร์โทร", email: "อีเมล", social: "โซเชียล",
+    address: "ที่อยู่", birth: "วันเกิด/อายุ", sensitive: "ข้อมูลอ่อนไหว", photo: "รูปถ่าย",
+    name: "ชื่อ", manual: "เพิ่มเอง",
+  };
+  const PREF_KEY = "lyra.redact.prefs";
+  const RENDER_DPI = 200;            // resolution of a flattened (redacted) page
+  const MAX_SIDE = 9000, MAX_AREA = 40e6;
+
+  let files = [];      // [{ name, size, buffer, pjs, numPages, pages:[], boxes:[], analyzed, analyzing, suggestion }]
+  let cur = -1, curPage = 1, seq = 0, boxSeq = 0;
+  let outBlob = null, outBase = "", outExt = ".pdf";
+  let renderTask = null, viewport = null;
+
+  /* ---------- preferences (per viewer; storage may be unavailable) ---------- */
+  function loadPrefs(){
+    try{
+      const p = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
+      if(p.cats) catsBox.querySelectorAll("input[data-cat]").forEach(c=>{ if(c.dataset.cat in p.cats) c.checked = !!p.cats[c.dataset.cat]; });
+      if(p.style) styleSel.value = p.style;
+    }catch(e){}
+  }
+  function savePrefs(){
+    try{
+      const cats = {};
+      catsBox.querySelectorAll("input[data-cat]").forEach(c=> cats[c.dataset.cat] = c.checked);
+      localStorage.setItem(PREF_KEY, JSON.stringify({ cats, style: styleSel.value }));
+    }catch(e){}
+  }
+  loadPrefs();
+  function catOn(cat){
+    if(cat === "manual") return true;
+    const c = catsBox.querySelector(`input[data-cat="${cat}"]`);
+    return !c || c.checked;
+  }
+  const effective = b => b.on && catOn(b.cat);
+
+  /* ---------- text model ----------
+     A page's text becomes one string plus, per character, the "segment" it
+     came from and its index inside that segment. A segment knows how to turn
+     a character range into a rectangle in raw PDF space, whether it came
+     from the PDF's own text (pdf.js item) or from OCR (a word bbox). */
+  const measureCtx = document.createElement("canvas").getContext("2d");
+  measureCtx.font = "100px sans-serif";
+  const COMBINING = /[ัิ-ฺ็-๎̀-ͯ]/;
+  function charFractions(str, family, expected){
+    // cumulative advance of each char boundary, 0..1. Thai combining marks
+    // sit on the previous letter and take no width. When the PDF's own font
+    // is loaded (pdf.js registers it under the item's fontName) and its total
+    // width agrees with what the PDF says, measure with it for exact edges;
+    // otherwise a generic font is close enough with the padding added later.
+    const chars = Array.from(str);
+    measureCtx.font = "100px sans-serif";
+    if(family && expected > 0){
+      try{
+        measureCtx.font = `100px "${family}", sans-serif`;
+        const total = chars.reduce((a, ch)=> a + (COMBINING.test(ch) ? 0 : measureCtx.measureText(ch).width), 0) / 100;
+        if(!(total > 0 && Math.abs(total / expected - 1) < 0.12)) measureCtx.font = "100px sans-serif";
+      }catch(e){ measureCtx.font = "100px sans-serif"; }
+    }
+    let w = chars.map(ch => COMBINING.test(ch) ? 0 : Math.max(1, measureCtx.measureText(ch).width));
+    if(!w.some(v => v > 0)) w = chars.map(()=> 1); // a lone mark (OCR gives these) still has a width
+    const total = w.reduce((a, b)=> a + b, 0) || 1;
+    const out = [0]; let acc = 0;
+    w.forEach(v=>{ acc += v; out.push(acc / total); });
+    return { chars, cum: out };
+  }
+  function itemSegment(item){
+    const tx = item.transform;
+    const fs = Math.hypot(tx[2], tx[3]) || Math.hypot(tx[0], tx[1]) || 10;
+    const len = Math.hypot(tx[0], tx[1]) || 1;
+    const ux = tx[0] / len, uy = tx[1] / len;          // text direction
+    const vx = -uy, vy = ux;                             // "up"
+    const width = item.width || fs * Array.from(item.str).length * 0.5;
+    const { chars, cum } = charFractions(item.str, item.fontName, width / fs);
+    return {
+      str: chars.join(""), chars, fs,
+      rect(a, b){ // chars [a, b)
+        const s = cum[a] * width, e = cum[b] * width;
+        const asc = fs * 1.02, desc = fs * 0.32, pad = Math.max(1, fs * 0.14);
+        const pts = [[s - pad, -desc], [e + pad, -desc], [e + pad, asc], [s - pad, asc]]
+          .map(([u, v])=> [tx[4] + u*ux + v*vx, tx[5] + u*uy + v*vy]);
+        return bboxOf(pts);
+      },
+    };
+  }
+  function ocrSegment(word, vp){
+    const { chars, cum } = charFractions(word.text);
+    const b = word.bbox;
+    return {
+      str: chars.join(""), chars, fs: (b.y1 - b.y0) / vp.scale, ocr: true,
+      rect(a, c){
+        // OCR boxes are approximate: pad by a fifth of the word height
+        const pad = Math.max(3, (b.y1 - b.y0) * 0.2);
+        const x0 = b.x0 + (b.x1 - b.x0) * cum[a] - pad, x1 = b.x0 + (b.x1 - b.x0) * cum[c] + pad;
+        const p0 = vp.convertToPdfPoint(x0, b.y0 - pad * 0.6), p1 = vp.convertToPdfPoint(x1, b.y1 + pad * 0.6);
+        return bboxOf([p0, p1]);
+      },
+    };
+  }
+  function bboxOf(pts){
+    const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  function union(r, s){ return r ? [Math.min(r[0], s[0]), Math.min(r[1], s[1]), Math.max(r[2], s[2]), Math.max(r[3], s[3])] : s.slice(); }
+  function overlapRatio(r, box){ // share of r covered by box
+    const w = Math.min(r[2], box[2]) - Math.max(r[0], box[0]);
+    const h = Math.min(r[3], box[3]) - Math.max(r[1], box[1]);
+    if(w <= 0 || h <= 0) return 0;
+    return (w * h) / Math.max(1e-6, (r[2]-r[0]) * (r[3]-r[1]));
+  }
+
+  // Build the page string. Items on one line get a space between them when
+  // there's a visible gap (pdf.js often omits it); a new line gets "\n".
+  function buildText(segments, lineBreakAfter){
+    let text = ""; const map = [];
+    segments.forEach((seg, si)=>{
+      seg.chars.forEach((ch, ci)=>{ text += ch; map.push([si, ci]); });
+      const br = lineBreakAfter[si];
+      if(br === "\n" || br === " "){ text += br; map.push(null); }
+    });
+    return { text, map };
+  }
+  function textSegmentsFromItems(items){
+    const segs = [], breaks = [];
+    const usable = items.filter(it => it.str && it.str.length && it.transform);
+    usable.forEach((it, i)=>{
+      segs.push(itemSegment(it));
+      const nx = usable[i+1];
+      let br = "";
+      if(it.hasEOL || !nx) br = "\n";
+      else{
+        const t = it.transform, n = nx.transform, fs = segs[i].fs;
+        const sameLine = Math.abs(n[5] - t[5]) < fs * 0.5 && Math.abs(n[4] - t[4]) < 2000;
+        const endX = t[4] + (it.width || 0);
+        if(!sameLine) br = "\n";
+        else if(n[4] - endX > fs * 0.18 && !/\s$/.test(it.str) && !/^\s/.test(nx.str)) br = " ";
+      }
+      breaks.push(br);
+    });
+    return { segs, breaks };
+  }
+
+  /* ---------- detectors ---------- */
+  const thaiFlex = src => src.replace(/\u0E33/g, "(?:\u0E33|\u0E4D\u0E32)");
+  function thaiIdValid(d){
+    if(!/^\d{13}$/.test(d) || d[0] === "0") return false;
+    let s = 0; for(let i=0;i<12;i++) s += (+d[i]) * (13 - i);
+    return (11 - (s % 11)) % 10 === +d[12];
+  }
+    // Thai labels also accept common OCR slips (a dropped tone mark or vowel)
+  const L_SENS = ["ศาสนา","Religion","เช(?:ื้|ื|้)?อชาติ","Race","Ethnicity","สัญชาติ","Nationality","สถานภาพสมรส","สถานภาพ","Marital\\s*Status","น(?:้ำ|ำ|้า|้ํา|ํ้า)หนัก","Weight","ส่วนสูง","Height","กรุ๊ปเลือด","หมู่เลือด","Blood\\s*(?:Type|Group)","โรคประจำตัว","Medical\\s*Conditions?","Health"];
+  const L_OTHER = ["วันเกิด","Date\\s*of\\s*Birth","Birth\\s*Date","DOB","อายุ","Age","เพศ","Gender","Sex","ที่อยู่","Address","โทร","Tel","Phone","Mobile","อีเมล","E-?mail","LINE","Facebook","ชื่อ","Name","ทหาร","Military"];
+    // English labels must stand alone ("Age" not inside "Village").
+  const NEXT_LABEL = thaiFlex("\\s*(?<![A-Za-z])(?:" + L_SENS.concat(L_OTHER).join("|") + ")(?![A-Za-z])\\s*[:：]?");
+  function labelled(labels, maxLen, stopAtComma = true){
+    // label, optional colon, then the value (named group v) up to the end of
+    // that field: line end, a wide gap, a separator or the next known label.
+    const end = "(?=\\s{2,}|\\n|$|\\||;|" + (stopAtComma ? ",|" : "") + NEXT_LABEL + ")";
+    return new RegExp(thaiFlex("(?<![A-Za-z])(?:" + labels.join("|")) + ")(?![A-Za-z])\\s*[:：]?\\s*(?<v>[^\\n|]{1," + maxLen + "}?)" + end, "gi");
+  }
+  const ADDR_TOKENS = /(บ้านเลขที่|เลขที่\s*\d|หมู่(ที่|บ้าน)?\s*\d|ม\.\s*\d|ซ\.|ซอย|ถ\.|ถนน|ต\.|ตำบล|แขวง|อ\.|อำเภอ|เขต|จ\.|จังหวัด|กรุงเทพ|กทม|\bSoi\b|\bMoo\b|\bRd\.?\b|\bRoad\b|Sub-?district|\bDistrict\b|\bProvince\b|Bangkok|Tambon|Amphoe)/gi;
+  const POSTCODE = /(?<!\d)[1-9]\d{4}(?!\d)/;
+  const PATTERNS = [
+    { cat: "email", re: /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g },
+    { cat: "idcard", re: /(?<![\d])\d[\s\-]?\d{4}[\s\-]?\d{5}[\s\-]?\d{2}[\s\-]?\d(?![\d])/g, check: m => thaiIdValid(m.replace(/\D/g, "")) },
+    { cat: "idcard", re: /(?:เลข(?:ที่)?(?:บัตร(?:ประชาชน|ประจำตัวประชาชน)?|หนังสือเดินทาง|พาสปอร์ต)|Passport\s*(?:No\.?|Number)?|ID\s*(?:Card\s*)?No\.?)\s*[:：]?\s*(?<v>[A-Z]{0,2}[\d\s\-]{6,17}\d)/gi },
+    { cat: "phone", re: /(?<![\d])(?:\+\s?66|\(?0)[\d\s\-().]{7,15}\d/g, check: m=>{
+        const d = m.replace(/\D/g, "");
+        if(/^66/.test(d)) return d.length === 10 || d.length === 11;
+        return d.length === 9 || d.length === 10;
+      } },
+    { cat: "social", re: /(?<![A-Za-z])(?:LINE\s*ID|LINE|ไลน์|Facebook|FB|IG|Instagram|TikTok|Twitter|LinkedIn)\s*[:：]\s*(?<v>@?[\w.\-\/ก-๙]+(?: [\w.\-ก-๙]+){0,3})/gi },
+    { cat: "social", re: /(?:https?:\/\/)?(?:www\.)?(?:facebook\.com|fb\.com|linkedin\.com|instagram\.com|tiktok\.com|line\.me|twitter\.com|x\.com|github\.com)\/[^\s]+/gi },
+    { cat: "address", re: labelled(["ที่อยู่(?:ปัจจุบัน|ตามทะเบียนบ้าน|ที่ติดต่อได้|ที่สามารถติดต่อได้)?","(?:Current\\s*|Home\\s*|Permanent\\s*)?Address"], 160, false) },
+    { cat: "birth", re: labelled(["วัน\\s*เดือน\\s*ปี\\s*เกิด","วันเกิด","เกิดวันที่","Date\\s*of\\s*Birth","Birth\\s*Date","Birthday","DOB"], 40) },
+    { cat: "birth", re: /(?<![A-Za-z])(?:อายุ|Age)(?![A-Za-z])\s*[:：]?\s*(?<v>\d{1,2}\s*(?:ปี|years?|yrs?\.?)?)/gi },
+    { cat: "sensitive", re: labelled(L_SENS, 40) },
+  ];
+
+  function findHits(text, names){
+    const hits = []; // {cat, start, end}
+    for(const p of PATTERNS){
+      p.re.lastIndex = 0;
+      let m;
+      while((m = p.re.exec(text))){
+        if(!m[0]){ p.re.lastIndex++; continue; }
+        if(p.check && !p.check(m[0])) continue;
+        let start = m.index, end = m.index + m[0].length;
+        if(m.groups && m.groups.v != null){
+          const v = m.groups.v.replace(/\s+$/, "");
+          if(!v.trim()) continue;
+          start = m.index + m[0].lastIndexOf(m.groups.v); end = start + v.length;
+        }
+        hits.push({ cat: p.cat, start, end });
+      }
+    }
+    // address lines without a label: enough address words (a postcode counts double)
+    let pos = 0;
+    text.split("\n").forEach(line=>{
+      const tokens = (line.match(ADDR_TOKENS) || []).length + (POSTCODE.test(line) ? 2 : 0);
+      if(tokens >= 3){
+        const lead = line.length - line.trimStart().length;
+        hits.push({ cat: "address", start: pos + lead, end: pos + line.trimEnd().length });
+      }
+      pos += line.length + 1;
+    });
+    // names the user typed: the full name and each part of 3+ letters
+    const terms = new Set();
+    names.forEach(n=>{
+      const t = n.trim().replace(/\s+/g, " "); if(t.length < 2) return;
+      terms.add(t);
+      t.split(" ").forEach(part=>{ if(Array.from(part).length >= 3) terms.add(part); });
+    });
+    terms.forEach(t=>{
+      const re = new RegExp(thaiFlex(Array.from(t).map(ch => ch === " " ? "\\s*" : ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("")), "gi");
+      let m; while((m = re.exec(text))){ hits.push({ cat: "name", start: m.index, end: m.index + m[0].length }); if(!m[0]) re.lastIndex++; }
+    });
+    return hits;
+  }
+
+  // one hit -> one rectangle per segment it touches
+  function hitRects(hit, pg){
+    const parts = new Map();
+    for(let i = hit.start; i < hit.end; i++){
+      const mp = pg.map[i]; if(!mp) continue;
+      const [si, ci] = mp;
+      const r = parts.get(si);
+      if(r) r[1] = ci + 1; else parts.set(si, [ci, ci + 1]);
+    }
+    const rects = [];
+    parts.forEach(([a, b], si)=> rects.push(pg.segs[si].rect(a, b)));
+    // merge pieces that sit on the same line into one box (OCR gives one
+    // piece per Thai cluster, each a slightly different height)
+    const merged = rects.map(r => r.slice());
+    let changed = true;
+    while(changed){
+      changed = false;
+      outer: for(let i = 0; i < merged.length; i++) for(let j = i + 1; j < merged.length; j++){
+        const a = merged[i], b = merged[j];
+        const vOver = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+        const minH = Math.min(a[3]-a[1], b[3]-b[1]), maxH = Math.max(a[3]-a[1], b[3]-b[1]);
+        const gap = Math.max(a[0], b[0]) - Math.min(a[2], b[2]);
+        if(vOver > minH * 0.4 && gap < maxH * 1.5){ merged[i] = union(a, b); merged.splice(j, 1); changed = true; break outer; }
+      }
+    }
+    return merged;
+  }
+
+  // Images drawn on the page, in raw PDF space (tracks the CTM through the
+  // operator list). Small-to-medium ones are photo candidates; full-page
+  // images (a scan or a background) are not.
+  async function findImages(page){
+    const ops = await page.getOperatorList();
+    const O = pdfjsLib.OPS, out = [];
+    let ctm = [1,0,0,1,0,0]; const stack = [];
+    const mul = (m, n)=> [m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5]];
+    for(let i=0;i<ops.fnArray.length;i++){
+      const fn = ops.fnArray[i], args = ops.argsArray[i];
+      if(fn === O.save) stack.push(ctm);
+      else if(fn === O.restore) ctm = stack.pop() || [1,0,0,1,0,0];
+      else if(fn === O.transform) ctm = mul(ctm, args);
+      else if(fn === O.paintFormXObjectBegin){ stack.push(ctm); if(args && args[0]) ctm = mul(ctm, args[0]); }
+      else if(fn === O.paintFormXObjectEnd) ctm = stack.pop() || [1,0,0,1,0,0];
+      else if(fn === O.paintImageXObject || fn === O.paintJpegXObject || fn === O.paintInlineImageXObject || fn === O.paintImageMaskXObject){
+        const pts = [[0,0],[1,0],[0,1],[1,1]].map(([x, y])=> [ctm[0]*x + ctm[2]*y + ctm[4], ctm[1]*x + ctm[3]*y + ctm[5]]);
+        out.push(bboxOf(pts));
+      }
+    }
+    return out;
+  }
+
+  /* ---------- OCR for scanned pages ---------- */
+  let ocrWorker = null;
+  async function getOcrWorker(){
+    if(ocrWorker) return ocrWorker;
+    if(typeof Tesseract === "undefined") throw new Error("ไม่พบโมดูล OCR");
+    ocrWorker = await Tesseract.createWorker("tha+eng", 1, {
+      workerPath: "vendor/tesseract/worker.min.js", corePath: "vendor/tesseract/tesseract-core-lstm.wasm.js",
+      langPath: "vendor/tessdata/", gzip: true, workerBlobURL: false, logger: ()=>{},
+    });
+    return ocrWorker;
+  }
+  async function ocrPage(page){
+    const vp = page.getViewport({ scale: 300 / 72 });
+    const c = document.createElement("canvas");
+    c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    const w = await getOcrWorker();
+    const { data } = await w.recognize(c, {}, { blocks: true });
+    c.width = c.height = 0;
+    const segs = [], breaks = [];
+    (data.blocks || []).forEach(bl => (bl.paragraphs || []).forEach(pa => (pa.lines || []).forEach(li=>{
+      const words = (li.words || []).filter(wd => (wd.text || "").trim());
+      // Tesseract reports Thai one cluster per "word", but its line text has
+      // the real spaces: walk the line text to learn where words really end.
+      const lt = (li.text || "").replace(/\s+$/, "");
+      let pos = 0, aligned = true;
+      const lh = li.bbox ? (li.bbox.y1 - li.bbox.y0) : 40;
+      words.forEach((wd, k)=>{
+        const t = wd.text.trim();
+        segs.push(ocrSegment({ text: t, bbox: wd.bbox }, vp));
+        let br;
+        if(k === words.length - 1) br = "\n";
+        else{
+          if(aligned){
+            while(pos < lt.length && /\s/.test(lt[pos])) pos++;
+            if(lt.startsWith(t, pos)){ pos += t.length; br = /\s/.test(lt[pos] || "") ? " " : ""; }
+            else aligned = false;
+          }
+          if(!aligned){ const nx = words[k + 1].bbox; br = (nx.x0 - wd.bbox.x1) > lh * 0.3 ? " " : ""; }
+        }
+        breaks.push(br);
+      });
+    })));
+    return { segs, breaks };
+  }
+
+  /* ---------- analysis ---------- */
+  function namesList(){ return namesInput.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean); }
+
+  async function analyzeFile(f){
+    if(f.analyzed || f.analyzing) return;
+    f.analyzing = true;
+    const mySeq = seq;
+    try{
+      let biggest = null;
+      for(let n = 1; n <= f.numPages; n++){
+        if(mySeq !== seq || !f.pjs) return;
+        setStatus(status, `กำลังค้นหาข้อมูลส่วนตัวใน ${f.name} หน้า ${n}/${f.numPages}...`, "loading");
+        const page = await f.pjs.getPage(n);
+        const vp1 = page.getViewport({ scale: 1 });
+        try{
+          const tiny = document.createElement("canvas"), tv = page.getViewport({ scale: 0.25 });
+          tiny.width = Math.ceil(tv.width); tiny.height = Math.ceil(tv.height);
+          await page.render({ canvasContext: tiny.getContext("2d"), viewport: tv }).promise;
+          tiny.width = tiny.height = 0;
+        }catch(e){}
+        const tc = await page.getTextContent();
+        const realText = tc.items.map(i => i.str || "").join("").replace(/\s/g, "");
+        let model, ocr = false;
+        if(realText.length >= 15){
+          model = textSegmentsFromItems(tc.items);
+          // candidate applicant name: the biggest text on page 1
+          if(n === 1) tc.items.forEach(it=>{
+            const s = (it.str || "").trim(), fs = Math.hypot(it.transform[2], it.transform[3]);
+            if(s.length >= 4 && s.length <= 40 && !/[\d@:/]/.test(s) && s.split(/\s+/).length <= 5 && (!biggest || fs > biggest.fs)) biggest = { s, fs };
+          });
+        }else{
+          setStatus(status, `หน้า ${n} เป็นภาพสแกน กำลังอ่านด้วย OCR (อาจใช้เวลาสักครู่)...`, "loading");
+          try{ model = await ocrPage(page); ocr = true; }
+          catch(e){ model = { segs: [], breaks: [] }; }
+        }
+        const { text, map } = buildText(model.segs, model.breaks);
+        const pg = { n, segs: model.segs, text, map, ocr, w: vp1.width, h: vp1.height };
+        f.pages[n - 1] = pg;
+        // hits
+        findHits(text, namesList()).forEach(h => hitRects(h, pg).forEach(r => addBox(f, n, r, h.cat, text.slice(h.start, h.end).replace(/\s+/g, " ").trim())));
+        // photos
+        try{
+          const area = vp1.width * vp1.height;
+          (await findImages(page)).forEach(r=>{
+            const a = (r[2]-r[0]) * (r[3]-r[1]);
+            const ar = (r[2]-r[0]) / Math.max(1e-6, r[3]-r[1]);
+            if(a > area * 0.004 && a < area * 0.35 && ar > 0.4 && ar < 2.5) addBox(f, n, r, "photo", "รูปภาพ");
+          });
+        }catch(e){}
+        page.cleanup();
+        if(f === files[cur] && n === curPage) drawBoxes();
+      }
+      f.suggestion = biggest && biggest.s.replace(/^(?:นางสาว|นาง|นาย|ดร\.|ว่าที่\s*ร\.?\s*ต\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?)\s*/i, "").trim();
+      f.analyzed = true;
+      refreshSide();
+      setStatus(status, `ค้นหาเสร็จแล้ว · ตรวจทานกรอบสีส้มก่อนกดถมดำ`, "ok");
+    }finally{
+      f.analyzing = false;
+      renderFileTabs();
+    }
+  }
+  function addBox(f, page, rect, cat, label){
+    // skip exact/near duplicates of the same category
+    if(f.boxes.some(b => b.page === page && b.cat === cat && (overlapRatio(rect, b.rect) > 0.85 || overlapRatio(b.rect, rect) > 0.85))) return;
+    // a name inside an email/link that is already boxed adds nothing
+    if(cat === "name" && f.boxes.some(b => b.page === page && b.cat !== "name" && overlapRatio(rect, b.rect) > 0.85)) return;
+    f.boxes.push({ id: ++boxSeq, page, rect, cat, label, on: true });
+  }
+  function redetectNames(){
+    files.forEach(f=>{
+      if(!f.analyzed) return;
+      const keepOff = new Set(f.boxes.filter(b => b.cat === "name" && !b.on).map(b => b.label + "@" + b.page));
+      f.boxes = f.boxes.filter(b => b.cat !== "name");
+      f.pages.forEach(pg=>{
+        if(!pg) return;
+        findHits(pg.text, namesList()).filter(h => h.cat === "name").forEach(h=>{
+          const label = pg.text.slice(h.start, h.end);
+          hitRects(h, pg).forEach(r => addBox(f, pg.n, r, "name", label));
+        });
+      });
+      f.boxes.forEach(b=>{ if(b.cat === "name" && keepOff.has(b.label + "@" + b.page)) b.on = false; });
+    });
+    drawBoxes(); refreshSide(); clearResult();
+  }
+
+  /* ---------- file handling ---------- */
+  wireDrop(drop, input, async (list)=>{
+    for(const file of list){
+      const f = { name: file.name.replace(/\.pdf$/i, ""), size: file.size, buffer: await readFileAsArrayBuffer(file), pages: [], boxes: [], analyzed: false };
+      try{
+        f.pjs = await pdfjsLib.getDocument({ data: f.buffer.slice(0) }).promise;
+        f.numPages = f.pjs.numPages;
+        files.push(f);
+      }catch(e){
+        setStatus(status, (e && e.name === "PasswordException") ? `${file.name} ตั้งรหัสผ่านไว้ กรุณาปลดล็อกที่เมนู "ปลดล็อกรหัสผ่าน" ก่อน` : `อ่านไฟล์ ${file.name} ไม่ได้: ${e && e.message}`, "err");
+      }
+    }
+    input.value = "";
+    if(!files.length) return;
+    body.style.display = "block";
+    clearResult();
+    if(cur < 0) await selectFile(0); else renderFileTabs();
+    for(const f of files) await analyzeFile(f);
+  });
+
+  function renderFileTabs(){
+    filesBar.innerHTML = "";
+    files.forEach((f, i)=>{
+      const n = f.boxes.filter(effective).length;
+      const tab = document.createElement("div");
+      tab.className = "rd-file" + (i === cur ? " active" : "");
+      tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", i === cur ? "true" : "false");
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "rd-file-btn";
+      btn.innerHTML = `<span class="rd-file-name">${escapeHtml(f.name)}.pdf</span><span class="rd-file-meta">${f.analyzed ? n + " จุด" : "กำลังค้นหา..."}</span>`;
+      btn.onclick = ()=> selectFile(i);
+      const rm = document.createElement("button");
+      rm.type = "button"; rm.className = "rd-file-rm"; rm.setAttribute("aria-label", "เอาไฟล์ " + f.name + " ออก"); rm.textContent = "×";
+      rm.onclick = ()=> removeFile(i);
+      tab.append(btn, rm);
+      filesBar.appendChild(tab);
+    });
+  }
+  async function selectFile(i){
+    cur = i; curPage = 1;
+    renderFileTabs(); refreshSide();
+    await renderPage();
+  }
+  function removeFile(i){
+    const f = files[i];
+    if(f && f.pjs){ try{ f.pjs.destroy(); }catch(e){} f.pjs = null; }
+    files.splice(i, 1);
+    clearResult();
+    if(!files.length){ cur = -1; seq++; body.style.display = "none"; setStatus(status, "", ""); refreshSide(); return; }
+    selectFile(Math.min(i, files.length - 1));
+  }
+
+  /* ---------- viewer ---------- */
+  async function renderPage(){
+    const f = files[cur]; if(!f || !f.pjs) return;
+    pageInfo.textContent = `หน้า ${curPage} / ${f.numPages}`;
+    prevBtn.disabled = curPage <= 1; nextBtn.disabled = curPage >= f.numPages;
+    const page = await f.pjs.getPage(curPage);
+    const wrapW = Math.max(320, Math.min(900, stage.parentElement.clientWidth - 24));
+    const base = page.getViewport({ scale: 1 });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    viewport = page.getViewport({ scale: (wrapW / base.width) * dpr });
+    if(renderTask){ try{ renderTask.cancel(); }catch(e){} }
+    canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+    canvas.style.width = (viewport.width / dpr) + "px"; canvas.style.height = (viewport.height / dpr) + "px";
+    stage.style.width = canvas.style.width; stage.style.height = canvas.style.height;
+    renderTask = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+    try{ await renderTask.promise; }catch(e){ if(e && e.name === "RenderingCancelledException") return; }
+    drawBoxes();
+  }
+  function cssRect(rect){
+    const dpr = canvas.width / (parseFloat(canvas.style.width) || canvas.width);
+    const r = viewport.convertToViewportRectangle(rect);
+    const x0 = Math.min(r[0], r[2]) / dpr, y0 = Math.min(r[1], r[3]) / dpr;
+    return { left: x0, top: y0, width: Math.abs(r[2] - r[0]) / dpr, height: Math.abs(r[3] - r[1]) / dpr };
+  }
+  function drawBoxes(){
+    overlay.innerHTML = "";
+    const f = files[cur]; if(!f || !viewport) return;
+    f.boxes.filter(b => b.page === curPage && catOn(b.cat)).forEach(b=>{
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "rd-box" + (b.on ? "" : " off") + (b.cat === "manual" ? " manual" : "");
+      el.dataset.id = b.id;
+      el.setAttribute("aria-pressed", b.on ? "true" : "false");
+      el.title = `${CAT_LABEL[b.cat]}: ${b.label}` + (b.on ? " (คลิกเพื่อไม่ถมดำ)" : " (คลิกเพื่อถมดำ)");
+      el.setAttribute("aria-label", el.title);
+      Object.assign(el.style, Object.fromEntries(Object.entries(cssRect(b.rect)).map(([k, v])=> [k, v + "px"])));
+      el.addEventListener("pointerdown", e => e.stopPropagation());
+      el.onclick = ()=>{ b.on = !b.on; drawBoxes(); refreshSide(); clearResult(); };
+      overlay.appendChild(el);
+    });
+  }
+  prevBtn.onclick = ()=>{ if(curPage > 1){ curPage--; renderPage(); } };
+  nextBtn.onclick = ()=>{ const f = files[cur]; if(f && curPage < f.numPages){ curPage++; renderPage(); } };
+  let resizeT = null;
+  window.addEventListener("resize", ()=>{ clearTimeout(resizeT); resizeT = setTimeout(()=>{ if(cur >= 0 && $("panel-redact").classList.contains("active")) renderPage(); }, 200); });
+
+  // drag on the page to add a box by hand
+  let dragStart = null, ghost = null;
+  overlay.addEventListener("pointerdown", e=>{
+    if(e.button !== 0 || cur < 0) return;
+    e.preventDefault();
+    const r = overlay.getBoundingClientRect();
+    dragStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+    ghost = document.createElement("div"); ghost.className = "rd-ghost";
+    overlay.appendChild(ghost);
+    overlay.setPointerCapture(e.pointerId);
+  });
+  overlay.addEventListener("pointermove", e=>{
+    if(!dragStart) return;
+    const r = overlay.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    Object.assign(ghost.style, { left: Math.min(x, dragStart.x) + "px", top: Math.min(y, dragStart.y) + "px", width: Math.abs(x - dragStart.x) + "px", height: Math.abs(y - dragStart.y) + "px" });
+  });
+  overlay.addEventListener("pointerup", e=>{
+    if(!dragStart) return;
+    const r = overlay.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+    const s = dragStart; dragStart = null; if(ghost){ ghost.remove(); ghost = null; }
+    if(Math.abs(x - s.x) < 6 || Math.abs(y - s.y) < 6) return;
+    const dpr = canvas.width / r.width;
+    const p0 = viewport.convertToPdfPoint(Math.min(x, s.x) * dpr, Math.min(y, s.y) * dpr);
+    const p1 = viewport.convertToPdfPoint(Math.max(x, s.x) * dpr, Math.max(y, s.y) * dpr);
+    files[cur].boxes.push({ id: ++boxSeq, page: curPage, rect: bboxOf([p0, p1]), cat: "manual", label: "กรอบที่เพิ่มเอง", on: true });
+    drawBoxes(); refreshSide(); clearResult();
+  });
+
+  /* ---------- side panel ---------- */
+  function refreshSide(){
+    const f = files[cur];
+    const counts = {};
+    (f ? f.boxes : []).forEach(b=>{ if(b.on) counts[b.cat] = (counts[b.cat] || 0) + 1; });
+    catsBox.querySelectorAll("[data-count]").forEach(el => el.textContent = counts[el.dataset.count] || 0);
+    hitsList.innerHTML = "";
+    let total = 0;
+    (f ? f.boxes : []).filter(b => catOn(b.cat)).sort((a, b)=> a.page - b.page || b.rect[3] - a.rect[3]).forEach(b=>{
+      if(b.on) total++;
+      const li = document.createElement("li");
+      const lab = document.createElement("label");
+      const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = b.on;
+      chk.onchange = ()=>{ b.on = chk.checked; drawBoxes(); refreshSide(); clearResult(); };
+      const txt = document.createElement("span");
+      txt.innerHTML = `<b>${CAT_LABEL[b.cat]}</b> ${escapeHtml(b.label.slice(0, 60))}`;
+      const go = document.createElement("button"); go.type = "button"; go.className = "rd-hit-page"; go.textContent = "หน้า " + b.page;
+      go.onclick = ()=>{ if(curPage !== b.page){ curPage = b.page; renderPage(); } };
+      lab.append(chk, txt); li.append(lab, go); hitsList.appendChild(li);
+    });
+    hitTotal.textContent = total;
+    if(f && f.suggestion && !namesInput.value.trim()){
+      suggestBtn.hidden = false;
+      suggestBtn.textContent = `ใช้ชื่อที่พบ: “${f.suggestion}”`;
+    }else suggestBtn.hidden = true;
+    runBtn.disabled = !files.length || files.some(x => !x.analyzed);
+    renderFileTabs();
+  }
+  catsBox.addEventListener("change", ()=>{ savePrefs(); drawBoxes(); refreshSide(); clearResult(); });
+  styleSel.addEventListener("change", ()=>{ savePrefs(); clearResult(); });
+  let nameT = null;
+  namesInput.addEventListener("input", ()=>{ clearTimeout(nameT); nameT = setTimeout(redetectNames, 350); });
+  suggestBtn.onclick = ()=>{ const f = files[cur]; if(f && f.suggestion){ namesInput.value = f.suggestion; redetectNames(); } };
+
+  function clearResult(){ outBlob = null; result.classList.remove("show"); }
+
+  /* ---------- produce the redacted PDF ---------- */
+  function canvasToBytes(c, type, q){
+    return new Promise((res, rej)=> c.toBlob(b => b ? b.arrayBuffer().then(a => res(new Uint8Array(a))) : rej(new Error("สร้างภาพหน้าไม่สำเร็จ")), type, q));
+  }
+  async function redactFile(f, onProgress){
+    const boxes = f.boxes.filter(effective);
+    const byPage = new Map();
+    boxes.forEach(b=>{ if(!byPage.has(b.page)) byPage.set(b.page, []); byPage.get(b.page).push(b.rect); });
+    const out = await PDFDocument.create();
+    out.registerFontkit(fontkit);
+    let src = null, font = null;
+    const style = styleSel.value;
+    for(let n = 1; n <= f.numPages; n++){
+      onProgress(n);
+      const rects = byPage.get(n);
+      if(!rects){
+        if(!src){
+          try{ src = await PDFDocument.load(f.buffer.slice(0)); }
+          catch(e){ src = (await autoDecryptIfNeeded(await PDFDocument.load(f.buffer.slice(0), { ignoreEncryption: true }), f.buffer)).doc; }
+        }
+        const [cp] = await out.copyPages(src, [n - 1]);
+        out.addPage(cp);
+        continue;
+      }
+      // flatten: render, burn the boxes in, place as an image
+      const page = await f.pjs.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      let scale = RENDER_DPI / 72;
+      const fit = Math.min(1, MAX_SIDE / (base.width * scale), MAX_SIDE / (base.height * scale), Math.sqrt(MAX_AREA / (base.width * base.height * scale * scale)));
+      scale *= fit;
+      const vp = page.getViewport({ scale });
+      const c = document.createElement("canvas");
+      c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      rects.forEach(rect=>{
+        const r = vp.convertToViewportRectangle(rect);
+        const x = Math.floor(Math.min(r[0], r[2])), y = Math.floor(Math.min(r[1], r[3]));
+        const w = Math.ceil(Math.abs(r[2] - r[0])) + 1, h = Math.ceil(Math.abs(r[3] - r[1])) + 1;
+        if(style === "label"){
+          ctx.fillStyle = "#4b4f58"; ctx.fillRect(x, y, w, h);
+          const fs = Math.min(h * 0.55, 13 * scale);
+          if(fs >= 6 && w > fs * 3){
+            ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+            ctx.fillStyle = "#ffffff"; ctx.font = `${fs}px "IBM Plex Sans Thai", sans-serif`;
+            ctx.textBaseline = "middle"; ctx.textAlign = "center";
+            ctx.fillText(w > fs * 7 ? "ข้อมูลส่วนบุคคล" : "PDPA", x + w / 2, y + h / 2);
+            ctx.restore();
+          }
+        }else{ ctx.fillStyle = "#000"; ctx.fillRect(x, y, w, h); }
+      });
+      const jpg = await canvasToBytes(c, "image/jpeg", 0.9);
+      c.width = c.height = 0;
+      const img = await out.embedJpg(jpg);
+      const pw = base.width, ph = base.height;
+      const op = out.addPage([pw, ph]);
+      op.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+      // searchable layer: only characters outside every box
+      const pg = f.pages[n - 1];
+      if(pg && pg.segs.length && !pg.ocr){
+        if(!font) font = await out.embedFont(ocrFontBytes(), { subset: true });
+        for(const seg of pg.segs){
+          let run = null;
+          const flush = ()=>{
+            if(!run) return;
+            const text = seg.chars.slice(run[0], run[1]).join("");
+            if(text.trim()){
+              const rr = base.convertToViewportRectangle(seg.rect(run[0], run[1]));
+              const x0 = Math.min(rr[0], rr[2]), x1 = Math.max(rr[0], rr[2]), yb = Math.max(rr[1], rr[3]);
+              const hh = Math.abs(rr[3] - rr[1]);
+              let size = Math.max(1, hh * 0.7);
+              try{
+                const mw = font.widthOfTextAtSize(text, size);
+                if(mw > 0) size = Math.max(1, size * Math.max(0.4, Math.min(2.5, (x1 - x0) / mw)));
+                op.drawText(text, { x: x0, y: ph - yb + hh * 0.24, size, font, opacity: 0 });
+              }catch(e){ /* a glyph the font can't encode — leave it out */ }
+            }
+            run = null;
+          };
+          seg.chars.forEach((ch, ci)=>{
+            const r = seg.rect(ci, ci + 1);
+            const hidden = rects.some(b => overlapRatio(r, b) > 0.25);
+            if(hidden){ flush(); return; }
+            if(run) run[1] = ci + 1; else run = [ci, ci + 1];
+          });
+          flush();
+        }
+      }
+      page.cleanup();
+    }
+    // drop anything that can carry personal data outside the page content
+    out.getPages().forEach(p=>{
+      ["Annots", "Metadata", "PieceInfo", "AA", "Thumb"].forEach(k => p.node.delete(PDFName.of(k)));
+    });
+    out.setTitle(""); out.setAuthor(""); out.setSubject(""); out.setKeywords([]);
+    out.setCreator("Lyra"); out.setProducer("Lyra");
+    const bytes = await out.save({ useObjectStreams: true });
+    return { bytes, boxes: boxes.length, pages: byPage.size };
+  }
+
+  // reopen the result and make sure none of the redacted strings survived
+  async function verify(bytes, f){
+    const norm = s => s.replace(/[\s\-().]+/g, "").toLowerCase();
+    const STRONG = new Set(["idcard", "email", "phone", "social"]);
+    const keptVisible = new Set(f.boxes.filter(b => !effective(b)).map(b => norm(b.label)));
+    const needles = f.boxes.filter(b => effective(b) && STRONG.has(b.cat)).map(b => norm(b.label)).filter(s => Array.from(s).length >= 6 && !keptVisible.has(s));
+    if(!needles.length) return [];
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+    let all = "";
+    try{
+      for(let n = 1; n <= doc.numPages; n++){
+        const tc = await (await doc.getPage(n)).getTextContent();
+        all += norm(tc.items.map(i => i.str || "").join(""));
+      }
+    }finally{ doc.destroy(); }
+    return Array.from(new Set(needles.filter(s => all.includes(s))));
+  }
+
+  runBtn.onclick = async ()=>{
+    if(!files.length) return;
+    runBtn.disabled = true; clearResult();
+    progress.style.display = "block"; progress.value = 0;
+    try{
+      const totalPages = files.reduce((a, f)=> a + f.numPages, 0);
+      let done = 0;
+      const outputs = [], leaks = [];
+      for(const f of files){
+        const res = await redactFile(f, n=>{
+          setStatus(status, `กำลังถมดำ ${f.name} หน้า ${n}/${f.numPages}...`, "loading");
+          progress.value = Math.round(((done + n) / totalPages) * 100);
+        });
+        done += f.numPages;
+        setStatus(status, `กำลังตรวจซ้ำ ${f.name}...`, "loading");
+        const left = await verify(res.bytes, f);
+        if(left.length) leaks.push(`${f.name}: ${left.join(", ")}`);
+        outputs.push({ f, ...res });
+      }
+      if(leaks.length) throw new Error("ตรวจซ้ำแล้วยังพบข้อความที่ควรถูกถมดำ จึงไม่สร้างไฟล์ (" + leaks.join(" · ") + ") กรุณาแจ้งผู้ดูแลระบบ");
+      if(outputs.length === 1){
+        outBlob = new Blob([outputs[0].bytes], { type: "application/pdf" });
+        outExt = ".pdf"; outBase = outputs[0].f.name + "_redacted";
+      }else{
+        const zip = new JSZip();
+        outputs.forEach(o => zip.file(sanitizeFilename(o.f.name) + "_redacted.pdf", o.bytes));
+        outBlob = await zip.generateAsync({ type: "blob" });
+        outExt = ".zip"; outBase = "redacted_" + outputs.length + "_files";
+      }
+      filenameExt.textContent = outExt;
+      setFilenameDefault(filenameInput, outBase);
+      const nBoxes = outputs.reduce((a, o)=> a + o.boxes, 0), nPages = outputs.reduce((a, o)=> a + o.pages, 0);
+      result.querySelector(".stats").innerHTML = `ถมดำ <b>${nBoxes}</b> จุด ใน <b>${nPages}</b> หน้า · ${outputs.length} ไฟล์ · <b>${fmtBytes(outBlob.size)}</b>`;
+      result.classList.add("show");
+      setStatus(status, nBoxes ? "เสร็จแล้ว · ตรวจซ้ำแล้ว ไม่พบข้อความที่ถมดำหลงเหลือในไฟล์ใหม่" : "เสร็จแล้ว · ไม่มีจุดที่เลือกถมดำ ระบบล้างข้อมูลแฝงของไฟล์ให้อย่างเดียว", nBoxes ? "ok" : "warn");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      progress.style.display = "none";
+      runBtn.disabled = !files.length;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outBlob) downloadBlob(outBlob, resolveFilename(filenameInput, outBase, outExt)); };
+})();
+
+/* ================= BLANK PAGES (ลบหน้าว่าง) =================
+   Renders every page small and measures how much "ink" it carries compared
+   with its own paper colour, so grey or yellowed scans still count as
+   blank, faint show-through from the back of the sheet is ignored, and the
+   outer margin (scanner edges, punch holes) is left out. Pages under the
+   chosen ink level are proposed for removal; the user can flip any page. */
+(function(){
+  const $ = id => document.getElementById(id);
+  const drop = $("blank-drop");
+  if(!drop) return;
+  const input = $("blank-input"), body = $("blank-body"), grid = $("blank-grid"), summary = $("blank-summary");
+  const sensSel = $("blank-sens"), keepAllBtn = $("blank-keepall"), redetectBtn = $("blank-redetect");
+  const runBtn = $("blank-run"), progress = $("blank-progress"), status = $("blank-status");
+  const result = $("blank-result"), downloadBtn = $("blank-download");
+  const filenameEl = $("blank-filename"), filenameInput = $("blank-filename-input"), removeBtn = $("blank-remove");
+
+  const ANALYSE_W = 420;   // px width used to measure ink (small marks must survive)
+  const THUMB_W = 110;
+  const MARGIN = 0.035;    // ignore this share of each edge (scanner shadow, punch holes)
+  let buffer = null, fileName = "document", outputBlob = null, loadSeq = 0;
+  let pages = [];          // [{ ink, chars, remove, cell }]
+
+  // share of the page (inside the margin) that is clearly darker than the paper
+  function inkRatio(canvas){
+    const ctx = canvas.getContext("2d");
+    const { width: w, height: h } = canvas;
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const x0 = Math.floor(w * MARGIN), x1 = Math.ceil(w * (1 - MARGIN));
+    const y0 = Math.floor(h * MARGIN), y1 = Math.ceil(h * (1 - MARGIN));
+    const hist = new Uint32Array(256);
+    let total = 0;
+    for(let y = y0; y < y1; y++) for(let x = x0; x < x1; x++){
+      const i = (y * w + x) * 4;
+      const l = (d[i] * 299 + d[i+1] * 587 + d[i+2] * 114) / 1000 | 0;
+      hist[l]++; total++;
+    }
+    // paper = the brightness 85% of pixels are darker than or equal to
+    let acc = 0, paper = 255;
+    for(let l = 0; l < 256; l++){ acc += hist[l]; if(acc >= total * 0.85){ paper = l; break; } }
+    const cut = Math.max(0, paper - 60);
+    let ink = 0;
+    for(let l = 0; l < cut; l++) ink += hist[l];
+    return total ? ink / total : 0;
+  }
+
+  function threshold(){ return parseFloat(sensSel.value) || 0.001; }
+  // a page with real text (not just a page number) is never "blank"
+  function isBlank(p){ return p.chars < 20 && p.ink < threshold(); }
+
+  function syncUI(){
+    let n = 0;
+    pages.forEach((p, i)=>{
+      if(p.remove) n++;
+      if(p.cell){
+        p.cell.classList.toggle("bl-remove", p.remove);
+        p.cell.setAttribute("aria-pressed", p.remove ? "true" : "false");
+        p.cell.title = `หน้า ${i + 1} · หมึก ${(p.ink * 100).toFixed(2)}%` + (p.remove ? " · จะถูกลบ (กดเพื่อเก็บไว้)" : " · เก็บไว้ (กดเพื่อลบ)");
+      }
+    });
+    const all = pages.length && n === pages.length;
+    summary.innerHTML = pages.length
+      ? (n ? `พบหน้าว่าง <b>${n}</b> หน้า จาก ${pages.length} หน้า` + (all ? " · ต้องเก็บไว้อย่างน้อย 1 หน้า" : "") : `ไม่พบหน้าว่าง · ทั้งหมด ${pages.length} หน้า`)
+      : "";
+    runBtn.disabled = !buffer || !n || all;
+    outputBlob = null; result.classList.remove("show");
+  }
+  function detect(){ pages.forEach(p => p.remove = isBlank(p)); syncUI(); }
+
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    const seq = ++loadSeq;
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    grid.innerHTML = ""; pages = [];
+    result.classList.remove("show");
+    progress.style.display = "block"; progress.value = 0;
+    let pjs = null;
+    try{
+      pjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      const n = pjs.numPages;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      for(let i = 1; i <= n; i++){
+        if(seq !== loadSeq) return;
+        setStatus(status, `กำลังตรวจหน้า ${i}/${n}...`, "loading");
+        const page = await pjs.getPage(i);
+        const base = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.max(ANALYSE_W, THUMB_W * dpr) / base.width });
+        const c = document.createElement("canvas");
+        c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        let chars = 0;
+        try{ chars = (await page.getTextContent()).items.map(t => t.str || "").join("").replace(/\s/g, "").length; }catch(e){}
+        const p = { ink: inkRatio(c), chars, remove: false };
+        const cell = document.createElement("button");
+        cell.type = "button"; cell.className = "pagecell bl-thumb";
+        c.className = "bl-canvas";
+        const num = document.createElement("div"); num.className = "num"; num.textContent = i;
+        const ink = document.createElement("span"); ink.className = "bl-ink"; ink.textContent = (p.ink * 100).toFixed(p.ink < 0.01 ? 2 : 1) + "%";
+        const badge = document.createElement("span"); badge.className = "bl-badge"; badge.textContent = "ลบ";
+        cell.append(c, badge, ink, num);
+        cell.onclick = ()=>{ p.remove = !p.remove; syncUI(); };
+        p.cell = cell;
+        pages.push(p);
+        p.remove = isBlank(p);
+        grid.appendChild(cell);
+        progress.value = Math.round((i / n) * 100);
+        page.cleanup();
+        if(i % 10 === 0) syncUI();
+      }
+      syncUI();
+      setStatus(status, "ตรวจเสร็จแล้ว · ดูรูปย่อก่อนกดลบ", "ok");
+    }catch(e){
+      buffer = null;
+      setStatus(status, "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+    }finally{
+      if(pjs) pjs.destroy();
+      progress.style.display = "none";
+      syncUI();
+    }
+  });
+
+  sensSel.addEventListener("change", detect);
+  redetectBtn.onclick = detect;
+  keepAllBtn.onclick = ()=>{ pages.forEach(p => p.remove = false); syncUI(); };
+
+  runBtn.onclick = async ()=>{
+    const keep = pages.map((p, i)=> p.remove ? -1 : i).filter(i => i >= 0);
+    if(!buffer || !keep.length || keep.length === pages.length) return;
+    runBtn.disabled = true;
+    setStatus(status, "กำลังสร้างไฟล์...", "loading");
+    try{
+      let src = await PDFDocument.load(buffer.slice(0), { ignoreEncryption: true });
+      ({ doc: src } = await autoDecryptIfNeeded(src, buffer));
+      const out = await PDFDocument.create();
+      (await out.copyPages(src, keep)).forEach(pg => out.addPage(pg));
+      const bytes = await out.save({ useObjectStreams: true });
+      outputBlob = new Blob([bytes], { type: "application/pdf" });
+      const removed = pages.length - keep.length;
+      const list = rangesToString(pages.map((p, i)=> p.remove ? i + 1 : 0).filter(Boolean));
+      result.querySelector(".stats").innerHTML = `ลบ <b>${removed}</b> หน้า (หน้า ${escapeHtml(list)}) · เหลือ <b>${keep.length}</b> หน้า · ${fmtBytes(outputBlob.size)}`;
+      setFilenameDefault(filenameInput, `${fileName}_no-blank`);
+      result.classList.add("show");
+      setStatus(status, "สำเร็จ", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      runBtn.disabled = false;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, `${fileName}_no-blank`, ".pdf")); };
+  removeBtn.onclick = ()=>{
+    loadSeq++;
+    buffer = null; outputBlob = null; pages = [];
+    grid.innerHTML = ""; summary.innerHTML = "";
+    body.style.display = "none"; input.value = "";
+    result.classList.remove("show"); progress.style.display = "none";
+    setStatus(status, "", "");
+    runBtn.disabled = true;
+  };
+})();
+
+/* ================= REMOVE WATERMARK (ลบลายน้ำ) =================
+   Finds watermarks that live in the PDF as separate objects and removes
+   only those objects — the rest of the page content is untouched:
+     • annotations of subtype /Watermark
+     • marked content tagged as a watermark (Acrobat, Word: /Artifact with
+       /Subtype /Watermark) or an optional-content layer named "Watermark"
+     • the same text drawn rotated, semi-transparent or very large on most
+       pages (this app's own "ใส่ลายน้ำ", most online tools)
+     • the same semi-transparent image drawn on most pages (logo watermarks)
+   A watermark baked into a scanned image cannot be separated and is left. */
+(function(){
+  const $ = id => document.getElementById(id);
+  const drop = $("unwatermark-drop");
+  if(!drop) return;
+  const input = $("unwatermark-input"), body = $("unwatermark-body");
+  const prevBtn = $("unwatermark-prev"), nextBtn = $("unwatermark-next"), pageInfo = $("unwatermark-pageinfo");
+  const beforeCanvas = $("unwatermark-before"), afterCanvas = $("unwatermark-after");
+  const groupsBox = $("unwatermark-groups"), runBtn = $("unwatermark-run"), status = $("unwatermark-status");
+  const result = $("unwatermark-result"), downloadBtn = $("unwatermark-download");
+  const filenameEl = $("unwatermark-filename"), filenameInput = $("unwatermark-filename-input"), removeBtn = $("unwatermark-remove");
+
+  let buffer = null, fileName = "document", outputBlob = null, loadSeq = 0;
+  let srcPjs = null, previewPjs = null, previewBytes = null;
+  let groups = [];            // [{ key, label, pages:Set, on }]
+  let textItems = [];         // pdf.js text items per page (for labels)
+  let numPages = 0, curPage = 1;
+
+  const latin = (bytes, s, e) => { let out = ""; for(let i = s; i < e; i++) out += String.fromCharCode(bytes[i]); return out; };
+  const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2, "0")).join("");
+  function pdfText(obj){
+    try{ if(!obj) return ""; if(obj.decodeText) return obj.decodeText(); return String(obj.asString ? obj.asString() : obj); }catch(e){ return ""; }
+  }
+
+  async function loadDoc(){
+    let doc = await PDFDocument.load(buffer.slice(0), { ignoreEncryption: true });
+    ({ doc } = await autoDecryptIfNeeded(doc, buffer));
+    return doc;
+  }
+
+  // Scan one loaded document. Returns per-page findings; the byte offsets
+  // refer to that page's combined content stream, which is identical every
+  // time the same file is loaded, so a later apply() can reuse the keys.
+  function analyse(doc){
+    const CE = window.LyraContentEditor;
+    const ctx = doc.context;
+    const pages = doc.getPages();
+    const perPage = [];
+    pages.forEach((page, pi)=>{
+      const found = { annots: [], ranges: [] };  // ranges: [{ key, start, end }]
+      perPage.push(found);
+      // 1. watermark annotations
+      try{
+        const annots = page.node.Annots();
+        if(annots) for(let i = 0; i < annots.size(); i++){
+          const a = ctx.lookup(annots.get(i));
+          const st = a && a.get && a.get(PDFName.of("Subtype"));
+          if(st && st.toString() === "/Watermark") found.annots.push({ key: "annot", index: i });
+        }
+      }catch(e){}
+      if(!CE) return;
+      let built = null;
+      try{ built = CE.getCombinedContentBytes(page, ctx); }catch(e){}
+      if(!built) return;
+      const bytes = built.combined;
+      let ops; try{ ops = CE.tokenize(bytes); }catch(e){ return; }
+      const res = page.node.Resources();
+      const lookupIn = (dictName, key)=>{
+        try{ const d = res && res.lookup(PDFName.of(dictName)); return d && d.lookup ? d.lookup(PDFName.of(key)) : null; }catch(e){ return null; }
+      };
+      const refOf = (dictName, key)=>{
+        try{ const d = res && res.lookup(PDFName.of(dictName)); const r = d && d.get(PDFName.of(key)); return r ? r.toString() : key; }catch(e){ return key; }
+      };
+      // 2. marked content + transparency tracking
+      const mc = [], alphaStack = [];
+      let alpha = 1, qDepth = 0;
+      const alphaAt = new Map();
+      for(const op of ops){
+        switch(op.name){
+          case "q": alphaStack.push(alpha); qDepth++; break;
+          case "Q": alpha = alphaStack.length ? alphaStack.pop() : 1; qDepth--; break;
+          case "gs": {
+            const g = op.args[0] && op.args[0].t === "name" ? lookupIn("ExtGState", op.args[0].v) : null;
+            if(g && g.get){
+              const ca = g.get(PDFName.of("ca")), CA = g.get(PDFName.of("CA"));
+              const v = [ca, CA].map(x => x && x.asNumber ? x.asNumber() : (x && x.numberValue != null ? x.numberValue : null)).filter(x => x != null);
+              if(v.length) alpha = Math.min(...v);
+            }
+            break;
+          }
+          case "BMC": mc.push({ start: op.opStart, wm: null, q: qDepth }); break;
+          case "BDC": {
+            const tag = op.args[0] && op.args[0].v, p = op.args[1];
+            let wm = null;
+            if(p && p.t === "raw"){
+              const txt = latin(bytes, p.start, p.end);
+              if(/\/Subtype\s*\/Watermark/.test(txt) || (tag === "Artifact" && /Watermark/i.test(txt))) wm = "mc-artifact";
+            }else if(p && p.t === "name"){
+              const d = lookupIn("Properties", p.v);
+              if(d && d.get){
+                if(tag === "OC"){
+                  const nm = pdfText(d.get(PDFName.of("Name")));
+                  if(/water\s*mark|ลายน้ำ/i.test(nm)) wm = "mc-ocg";
+                }else{
+                  const sub = d.get(PDFName.of("Subtype"));
+                  if(sub && sub.toString() === "/Watermark") wm = "mc-artifact";
+                }
+              }
+            }
+            mc.push({ start: op.opStart, wm, q: qDepth });
+            break;
+          }
+          case "EMC": {
+            const m = mc.pop();
+            // only cut a balanced section (same q depth at both ends)
+            if(m && m.wm && m.q === qDepth) found.ranges.push({ key: m.wm, start: m.start, end: op.opEnd });
+            break;
+          }
+          case "Do": {
+            if(alpha < 0.95 && op.args[0] && op.args[0].t === "name"){
+              const ref = refOf("XObject", op.args[0].v);
+              found.ranges.push({ key: "img:" + ref + ":" + alpha.toFixed(2), start: op.opStart, end: op.opEnd, cand: true });
+            }
+            break;
+          }
+          case "Tj": case "TJ": alphaAt.set(op.opStart, alpha); break;
+        }
+      }
+      // 3. text runs: describe each one so repeats across pages can be found
+      try{
+        const cands = CE.walkTextPositions(bytes);
+        const byOp = new Map();
+        cands.forEach(c=>{
+          if(c.op.name !== "Tj" && c.op.name !== "TJ") return;
+          const e = byOp.get(c.op.opStart) || { op: c.op, t: null, parts: [] };
+          if(!e.t && c.transform) e.t = c.transform;
+          e.parts.push(c.str.v);
+          byOp.set(c.op.opStart, e);
+        });
+        byOp.forEach(e=>{
+          if(!e.t) return;
+          const t = e.t;
+          const size = Math.hypot(t[0], t[1]);
+          const angle = ((Math.atan2(t[1], t[0]) * 180 / Math.PI) % 360 + 360) % 360;
+          const off90 = Math.min(...[0, 90, 180, 270, 360].map(a => Math.abs(angle - a)));
+          const a = alphaAt.has(e.op.opStart) ? alphaAt.get(e.op.opStart) : 1;
+          const total = e.parts.reduce((n, u)=> n + u.length, 0);
+          if(!total) return;
+          const joined = new Uint8Array(total); let k = 0; e.parts.forEach(u=>{ joined.set(u, k); k += u.length; });
+          const looksWm = off90 > 5 || a < 0.95 || size >= 28;
+          if(!looksWm) return;
+          // keyed by the text alone: this app (and others) scale and turn the
+          // watermark per page size and /Rotate, so size and angle vary
+          found.ranges.push({ key: "txt:" + hex(joined), start: e.op.opStart, end: e.op.opEnd, cand: true, t, size, angle, strong: off90 > 5 || a < 0.95 });
+        });
+      }catch(e){}
+    });
+    // keep repeated candidates only (a watermark is on most pages); a
+    // one-page file accepts a rotated/transparent run on its own
+    const count = new Map();
+    perPage.forEach(f => new Set(f.ranges.filter(r => r.cand).map(r => r.key)).forEach(k => count.set(k, (count.get(k) || 0) + 1)));
+    const need = pages.length === 1 ? 1 : Math.max(2, Math.ceil(pages.length * 0.6));
+    perPage.forEach(f=>{
+      const marked = f.ranges.filter(r => !r.cand);
+      f.ranges = f.ranges.filter(r => !r.cand || (
+        count.get(r.key) >= need && (pages.length > 1 || r.strong || r.key.startsWith("img:")) &&
+        !marked.some(m => r.start >= m.start && r.end <= m.end)));   // already inside a tagged watermark
+    });
+    return perPage;
+  }
+
+  function summarise(perPage){
+    const map = new Map();
+    perPage.forEach((f, pi)=>{
+      f.annots.forEach(a=>{ const g = map.get(a.key) || { key: a.key, pages: new Set(), first: null }; g.pages.add(pi + 1); map.set(a.key, g); });
+      f.ranges.forEach(r=>{ const g = map.get(r.key) || { key: r.key, pages: new Set(), first: null }; g.pages.add(pi + 1); if(!g.first) g.first = { pi, r }; map.set(r.key, g); });
+    });
+    return Array.from(map.values()).map(g=>{
+      let label;
+      if(g.key === "annot") label = "ลายน้ำแบบ Annotation";
+      else if(g.key === "mc-artifact") label = "ลายน้ำมาตรฐาน PDF (Acrobat, Word)";
+      else if(g.key === "mc-ocg") label = "เลเยอร์ลายน้ำ (Watermark layer)";
+      else if(g.key.startsWith("img:")) label = "รูปภาพโปร่งใสที่ซ้ำกันหลายหน้า";
+      else{
+        // name the text from pdf.js (the raw bytes are glyph codes)
+        let str = "";
+        if(g.first && g.first.r.t){
+          const t = g.first.r.t;
+          const ang = r => Math.atan2(r[1], r[0]) * 180 / Math.PI;
+          const sz = r => Math.hypot(r[0], r[1]);
+          let best = null, bd = Infinity;
+          (textItems[g.first.pi] || []).forEach(x=>{
+            if(!x.transform || !(x.str || "").trim()) return;
+            const da = Math.abs(((ang(x.transform) - ang(t)) % 360 + 540) % 360 - 180);
+            if(da > 3 || Math.abs(sz(x.transform) - sz(t)) > Math.max(2, sz(t) * 0.1)) return;
+            const d = Math.hypot(x.transform[4] - t[4], x.transform[5] - t[5]);
+            if(d < bd){ bd = d; best = x; }
+          });
+          if(best) str = best.str;
+        }
+        label = str ? `ข้อความ “${str.trim().slice(0, 40)}”` : "ข้อความลายน้ำ (หมุน/โปร่งใส/ตัวใหญ่)";
+      }
+      return { key: g.key, label, pages: g.pages, on: true };
+    });
+  }
+
+  // Build a copy of the document without the selected watermark groups.
+  async function apply(keys){
+    const doc = await loadDoc();
+    const perPage = analyse(doc);
+    const ctx = doc.context;
+    const CE = window.LyraContentEditor;
+    let removed = 0;
+    doc.getPages().forEach((page, pi)=>{
+      const f = perPage[pi];
+      // annotations (remove from the end so indices stay valid)
+      const ann = f.annots.filter(a => keys.has(a.key)).map(a => a.index).sort((a, b)=> b - a);
+      if(ann.length){
+        const arr = page.node.Annots();
+        ann.forEach(i => arr.remove(i));
+        removed += ann.length;
+      }
+      const cut = f.ranges.filter(r => keys.has(r.key)).map(r => [r.start, r.end]).sort((a, b)=> a[0] - b[0]);
+      if(!cut.length) return;
+      const merged = [];
+      cut.forEach(([s, e])=>{ const last = merged[merged.length - 1]; if(last && s <= last[1]) last[1] = Math.max(last[1], e); else merged.push([s, e]); });
+      const bytes = CE.getCombinedContentBytes(page, ctx).combined;
+      const keep = []; let pos = 0, len = 0;
+      merged.forEach(([s, e])=>{ keep.push(bytes.subarray(pos, s)); len += s - pos; pos = e; });
+      keep.push(bytes.subarray(pos)); len += bytes.length - pos;
+      const out = new Uint8Array(len); let k = 0;
+      keep.forEach(part=>{ out.set(part, k); k += part.length; });
+      page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(out)));
+      removed += merged.length;
+    });
+    return { bytes: await doc.save({ useObjectStreams: true }), removed };
+  }
+
+  /* ---------- preview ---------- */
+  async function renderInto(pjs, n, canvas){
+    const page = await pjs.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const wrapW = Math.max(150, Math.min(420, (canvas.parentElement.clientWidth || 300) - 4));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const vp = page.getViewport({ scale: (wrapW / base.width) * dpr });
+    canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height);
+    canvas.style.width = (vp.width / dpr) + "px";
+    const c = canvas.getContext("2d"); c.fillStyle = "#fff"; c.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: c, viewport: vp }).promise;
+  }
+  async function showPage(){
+    pageInfo.textContent = `หน้า ${curPage} / ${numPages}`;
+    prevBtn.disabled = curPage <= 1; nextBtn.disabled = curPage >= numPages;
+    if(srcPjs) await renderInto(srcPjs, curPage, beforeCanvas);
+    if(previewPjs) await renderInto(previewPjs, curPage, afterCanvas);
+  }
+  let rebuildSeq = 0;
+  async function rebuild(){
+    const my = ++rebuildSeq;
+    outputBlob = null; result.classList.remove("show");
+    const keys = new Set(groups.filter(g => g.on).map(g => g.key));
+    runBtn.disabled = !keys.size;
+    try{
+      const { bytes } = await apply(keys);
+      if(my !== rebuildSeq) return;
+      if(previewPjs){ try{ previewPjs.destroy(); }catch(e){} }
+      previewBytes = bytes;
+      previewPjs = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      await showPage();
+    }catch(e){
+      setStatus(status, "สร้างตัวอย่างไม่สำเร็จ: " + (e && e.message), "err");
+    }
+  }
+  function renderGroups(){
+    groupsBox.innerHTML = "";
+    if(!groups.length){
+      groupsBox.innerHTML = '<p class="rd-note" style="margin:0;">ไม่พบลายน้ำที่แยกออกได้ในไฟล์นี้ ถ้าลายน้ำเป็นส่วนหนึ่งของภาพสแกน จะลบไม่ได้โดยไม่ทำลายเนื้อหาเอกสาร</p>';
+      return;
+    }
+    groups.forEach(g=>{
+      const lab = document.createElement("label"); lab.className = "rd-cat";
+      const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = g.on;
+      chk.onchange = ()=>{ g.on = chk.checked; rebuild(); };
+      const txt = document.createElement("span"); txt.className = "rd-cat-text";
+      const pagesTxt = g.pages.size === numPages ? "ทุกหน้า" : "หน้า " + rangesToString(Array.from(g.pages));
+      txt.innerHTML = `<span class="rd-cat-label">${escapeHtml(g.label)}</span><span class="rd-cat-hint">${escapeHtml(pagesTxt)}</span>`;
+      lab.append(chk, txt); groupsBox.appendChild(lab);
+    });
+  }
+
+  /* ---------- load / run ---------- */
+  function cleanup(){
+    [srcPjs, previewPjs].forEach(d=>{ if(d){ try{ d.destroy(); }catch(e){} } });
+    srcPjs = previewPjs = null; previewBytes = null; groups = []; textItems = [];
+  }
+  wireDrop(drop, input, async (files)=>{
+    const file = files[0];
+    const seq = ++loadSeq;
+    cleanup();
+    fileName = file.name.replace(/\.pdf$/i, "");
+    buffer = await readFileAsArrayBuffer(file);
+    filenameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+    body.style.display = "block";
+    outputBlob = null; result.classList.remove("show");
+    setStatus(status, "กำลังค้นหาลายน้ำ...", "loading");
+    try{
+      srcPjs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+      numPages = srcPjs.numPages; curPage = 1;
+      for(let i = 1; i <= numPages; i++){
+        try{ textItems.push((await (await srcPjs.getPage(i)).getTextContent()).items); }catch(e){ textItems.push([]); }
+      }
+      if(seq !== loadSeq) return;
+      const doc = await loadDoc();
+      groups = summarise(analyse(doc));
+      renderGroups();
+      if(groups.length){
+        await rebuild();
+        setStatus(status, `พบลายน้ำ ${groups.length} แบบ · เทียบภาพก่อน-หลังด้านซ้ายก่อนกดลบ`, "ok");
+      }else{
+        await showPage();
+        afterCanvas.width = afterCanvas.height = 0;
+        runBtn.disabled = true;
+        setStatus(status, "ไม่พบลายน้ำที่ลบได้", "warn");
+      }
+    }catch(e){
+      buffer = null; cleanup(); renderGroups(); runBtn.disabled = true;
+      setStatus(status, "ไม่สามารถอ่านไฟล์นี้ได้: " + (e && e.message), "err");
+    }
+  });
+  prevBtn.onclick = ()=>{ if(curPage > 1){ curPage--; showPage(); } };
+  nextBtn.onclick = ()=>{ if(curPage < numPages){ curPage++; showPage(); } };
+
+  runBtn.onclick = async ()=>{
+    const keys = new Set(groups.filter(g => g.on).map(g => g.key));
+    if(!buffer || !keys.size) return;
+    runBtn.disabled = true;
+    setStatus(status, "กำลังลบลายน้ำ...", "loading");
+    try{
+      const { bytes, removed } = await apply(keys);
+      outputBlob = new Blob([bytes], { type: "application/pdf" });
+      result.querySelector(".stats").innerHTML = `ลบลายน้ำ <b>${groups.filter(g => g.on).length}</b> แบบ (${removed} จุด) · ${fmtBytes(outputBlob.size)}`;
+      setFilenameDefault(filenameInput, `${fileName}_no-watermark`);
+      result.classList.add("show");
+      setStatus(status, "สำเร็จ", "ok");
+    }catch(e){
+      setStatus(status, "เกิดข้อผิดพลาด: " + (e && e.message), "err");
+    }finally{
+      runBtn.disabled = false;
+    }
+  };
+  downloadBtn.onclick = ()=>{ if(outputBlob) downloadBlob(outputBlob, resolveFilename(filenameInput, `${fileName}_no-watermark`, ".pdf")); };
+  removeBtn.onclick = ()=>{
+    loadSeq++; rebuildSeq++;
+    buffer = null; outputBlob = null; cleanup(); renderGroups();
+    body.style.display = "none"; input.value = "";
+    result.classList.remove("show"); setStatus(status, "", "");
+    runBtn.disabled = true;
   };
 })();

@@ -7,20 +7,22 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261022f" />
+<link rel="stylesheet" href="style.css?v=20261106e" />
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="header-text">
+<div class="wrap app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-top">
       <img class="logo-img" src="vendor/img/lyra-logo.png?v=20260918a" alt="Lyra" width="1663" height="864" />
-      <span class="badge"><span class="dot"></span>ประมวลผลในเบราว์เซอร์ทั้งหมด ไม่มีการอัปโหลดไฟล์ขึ้นเซิร์ฟเวอร์</span>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-label="เปิด/ปิดเมนูเครื่องมือ" aria-expanded="false" aria-controls="sidebar-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
     </div>
-    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="สลับโหมดสว่าง/มืด" title="สลับโหมดสว่าง/มืด">
-      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
-    </button>
-  </header>
+    <div class="sidebar-nav" id="sidebar-nav">
+    <label class="tool-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input type="search" id="tool-search" placeholder="ค้นหาเครื่องมือ" aria-label="ค้นหาเครื่องมือ" autocomplete="off" />
+    </label>
 
   <nav class="tabs-groups" id="tabs-groups">
     <div class="tab-group active-group" data-group="structure">
@@ -50,6 +52,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
           <span class="tab-label">บีบอัดไฟล์</span>
         </button>
+        <button data-tab="blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg>
+          <span class="tab-label">ลบหน้าว่าง</span>
+        </button>
       </div>
     </div>
 
@@ -60,6 +66,14 @@
         <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div class="group-menu">
+        <button data-tab="quickedit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497Z"/><path d="m15 5 4 4"/></svg>
+          <span class="tab-label">แก้ไขเอกสาร</span>
+        </button>
+        <button data-tab="signature">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+          <span class="tab-label">ลงลายเซ็น</span>
+        </button>
         <button data-tab="pagenum">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
           <span class="tab-label">ใส่เลขหน้า</span>
@@ -68,13 +82,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
           <span class="tab-label">ใส่ลายน้ำ</span>
         </button>
-        <button data-tab="signature">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
-          <span class="tab-label">ลงลายเซ็น</span>
-        </button>
-        <button data-tab="quickedit">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497Z"/><path d="m15 5 4 4"/></svg>
-          <span class="tab-label">แก้ไขเอกสาร</span>
+        <button data-tab="unwatermark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+          <span class="tab-label">ลบลายน้ำ</span>
         </button>
       </div>
     </div>
@@ -94,6 +104,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
           <span class="tab-label">ปลดล็อกรหัสผ่าน</span>
         </button>
+        <button data-tab="redact">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+          <span class="tab-label">ถมดำข้อมูลส่วนตัว</span>
+        </button>
       </div>
     </div>
 
@@ -107,6 +121,10 @@
         <button data-tab="jpgpdf">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           <span class="tab-label">JPG to PDF</span>
+        </button>
+        <button data-tab="pdfjpg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          <span class="tab-label">PDF to JPG</span>
         </button>
         <button data-tab="pdfword">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
@@ -147,6 +165,20 @@
       </div>
     </div>
   </nav>
+    <div class="sidebar-foot">
+      <span class="badge privacy-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>ประมวลผลในเบราว์เซอร์ทั้งหมด ไฟล์ไม่ถูกอัปโหลด</span></span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="สลับโหมดสว่าง/มืด" title="สลับโหมดสว่าง/มืด">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
+      <span class="theme-toggle-label theme-label-dark">โหมดมืด</span><span class="theme-toggle-label theme-label-light">โหมดสว่าง</span>
+      </button>
+      <div class="version-tag">Version 2.0</div>
+    </div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="main-crumb" id="main-crumb" aria-live="polite"></div>
 
   <!-- ================= MERGE ================= -->
   <section class="panel active" id="panel-merge">
@@ -157,6 +189,8 @@
       <h2>รวมไฟล์ PDF</h2>
     </div>
     <p class="desc">เลือกไฟล์ PDF หลายไฟล์ จัดลำดับ แล้วรวมเป็นไฟล์เดียว</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="merge-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -166,6 +200,9 @@
       <input type="file" id="merge-input" accept="application/pdf" multiple />
     </div>
     <div class="filelist" id="merge-list"></div>
+      </div>
+      <aside class="tool-side" aria-label="ผลลัพธ์">
+        <h3 class="tool-side-title">ผลลัพธ์</h3>
     <div class="row">
       <button class="btn" id="merge-run" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -195,6 +232,8 @@
       </button>
     </div>
     <p class="note">ลำดับไฟล์ในรายการคือลำดับหน้าที่จะถูกรวม ใช้ปุ่มลูกศรเพื่อสลับตำแหน่ง หรือกด "ดูตัวอย่าง" เพื่อดูไฟล์ที่รวมแล้วเป็นเอกสารเดียว เลื่อนดูได้ทุกหน้าก่อนกดรวมจริง</p>
+      </aside>
+    </div>
   </section>
 
   <!-- ================= SPLIT ================= -->
@@ -206,6 +245,8 @@
       <h2>แยก / ตัดหน้า PDF</h2>
     </div>
     <p class="desc">เลือกไฟล์ PDF หนึ่งไฟล์ แล้วเลือกหน้าที่ต้องการ</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="split-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -239,6 +280,13 @@
         </div>
       </div>
       <div class="pagegrid" id="split-grid"></div>
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
       <div class="row">
         <div class="field">
           <label>รูปแบบผลลัพธ์</label>
@@ -272,6 +320,7 @@
           ดาวน์โหลด
         </button>
       </div>
+      </aside>
     </div>
   </section>
 
@@ -284,6 +333,8 @@
       <h2>บีบอัดไฟล์ PDF</h2>
     </div>
     <p class="desc">ลดขนาดไฟล์โดยแปลงแต่ละหน้าเป็นภาพคุณภาพที่ปรับได้ แล้วประกอบกลับเป็น PDF</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="compress-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -303,6 +354,15 @@
           ลบไฟล์นี้
         </button>
       </div>
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
       <div class="row">
         <div class="field">
           <label>ความละเอียด</label>
@@ -343,6 +403,7 @@
         </button>
       </div>
       <p class="note">หมายเหตุ: หลังบีบอัด แต่ละหน้าจะกลายเป็นรูปภาพ ทำให้คัดลอกข้อความในไฟล์ไม่ได้อีก เหมาะกับการลดขนาดไฟล์เพื่อส่งอีเมลหรืออัปโหลด</p>
+      </aside>
     </div>
   </section>
 
@@ -355,6 +416,8 @@
       <h2>ใส่เลขหน้า</h2>
     </div>
     <p class="desc">เพิ่มเลขหน้าอัตโนมัติในทุกหน้าของเอกสาร</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="pagenum-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -374,6 +437,16 @@
           ลบไฟล์นี้
         </button>
       </div>
+
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
       <div class="row">
         <div class="field">
           <label>ตำแหน่ง</label>
@@ -436,6 +509,7 @@
         </button>
       </div>
       <p class="note">พิมพ์ <b>{เลขหน้า}</b> แทนตำแหน่งเลขหน้าปัจจุบัน และ <b>{จำนวนหน้า}</b> แทนจำนวนหน้าทั้งหมด เช่น "หน้า {เลขหน้า} จาก {จำนวนหน้า}" หรือกดเลือกรูปแบบสำเร็จรูปด้านบนได้เลย</p>
+      </aside>
     </div>
   </section>
 
@@ -447,7 +521,9 @@
       </div>
       <h2>ใส่ลายน้ำ</h2>
     </div>
-    <p class="desc">เพิ่มข้อความลายน้ำในทุกหน้าของเอกสาร เลือกให้อยู่กึ่งกลางอัตโนมัติ หรือกำหนดตำแหน่งเองแล้วลากปรับได้อย่างอิสระ</p>
+    <p class="desc">เพิ่มข้อความลายน้ำลงในเอกสาร ดูตัวอย่างได้ทุกหน้า เลือกเฉพาะหน้าที่ต้องการ และให้อยู่กึ่งกลางอัตโนมัติหรือลากกำหนดตำแหน่งเอง</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="watermark-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -467,13 +543,7 @@
           ลบไฟล์นี้
         </button>
       </div>
-      <div class="field" style="margin-bottom:12px;">
-        <label>ตำแหน่งลายน้ำ</label>
-        <div class="chip-group" id="watermark-position-mode">
-          <button type="button" class="chip active" data-mode="auto">กึ่งกลางอัตโนมัติ</button>
-          <button type="button" class="chip" data-mode="custom">กำหนดตำแหน่งเอง (ลากได้)</button>
-        </div>
-      </div>
+
       <div class="wm-preview-wrap">
         <div class="wm-preview-placeholder" id="watermark-preview-placeholder">ตัวอย่างลายน้ำจะแสดงที่นี่หลังอัปโหลดไฟล์</div>
         <canvas class="wm-preview-canvas" id="watermark-preview" style="display:none;"></canvas>
@@ -481,6 +551,37 @@
       <div class="wm-preview-hint" id="watermark-preview-hint" style="display:none;">
         <span>ลากบนตัวอย่างเพื่อย้ายตำแหน่งลายน้ำได้อย่างอิสระ</span>
         <button type="button" class="btn secondary small" id="watermark-reset-pos">รีเซ็ตตำแหน่งกลางหน้า</button>
+      </div>
+
+      <div class="wm-pages" id="watermark-pages" hidden>
+        <div class="wm-pages-head">
+          <div class="field" style="flex:1; min-width:200px; margin:0;">
+            <label for="watermark-range">หน้าที่จะใส่ลายน้ำ (เช่น 2-10)</label>
+            <input type="text" id="watermark-range" placeholder="เว้นว่าง = ยังไม่เลือกหน้า" />
+          </div>
+          <div class="wm-pages-btns">
+            <button type="button" class="btn secondary small" id="watermark-all">ทุกหน้า</button>
+            <button type="button" class="btn secondary small" id="watermark-none">ล้างการเลือก</button>
+          </div>
+        </div>
+        <div class="wm-pages-tip">กดรูปย่อเพื่อดูหน้านั้นเป็นภาพใหญ่ · ติ๊กมุมรูปเพื่อเลือก/ไม่เลือกหน้า</div>
+        <div class="pagegrid wm-grid" id="watermark-grid"></div>
+      </div>
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
+      <div class="field" style="margin-bottom:12px;">
+        <label>ตำแหน่งลายน้ำ</label>
+        <div class="chip-group" id="watermark-position-mode">
+          <button type="button" class="chip active" data-mode="auto">กึ่งกลางอัตโนมัติ</button>
+          <button type="button" class="chip" data-mode="custom">กำหนดตำแหน่งเอง (ลากได้)</button>
+        </div>
       </div>
       <div class="row">
         <div class="field" style="flex:1; min-width:200px;">
@@ -506,6 +607,7 @@
           <input type="range" id="watermark-rotate" min="0" max="360" value="45" />
         </div>
       </div>
+      <label class="checkline" style="margin:4px 0 14px;"><input type="checkbox" id="watermark-scale-pages" checked /> ปรับขนาดลายน้ำตามขนาดหน้า (หน้าใหญ่หรือ A3 ได้ลายน้ำใหญ่ตามสัดส่วน)</label>
       <div class="row">
         <button class="btn" id="watermark-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -529,6 +631,7 @@
           ดาวน์โหลดไฟล์
         </button>
       </div>
+      </aside>
     </div>
   </section>
 
@@ -541,6 +644,7 @@
       <h2>ลงลายเซ็นในเอกสาร</h2>
     </div>
     <p class="desc">อัปโหลดไฟล์ PDF และรูปลายเซ็น แล้วลากวางตำแหน่งบนหน้าเอกสาร ลากมุมเพื่อปรับขนาด — วางได้หลายหน้าในไฟล์เดียวกัน</p>
+    <div class="panel-body">
 
     <div class="drop" id="signature-drop">
       <div class="drop-icon" aria-hidden="true">
@@ -661,6 +765,7 @@
       </div>
       <div class="status" id="signature-status"></div>
     </div>
+    </div>
   </section>
 
   <!-- ================= SET PASSWORD ================= -->
@@ -672,6 +777,8 @@
       <h2>ใส่รหัสผ่าน PDF</h2>
     </div>
     <p class="desc">เข้ารหัสไฟล์ PDF ด้วยรหัสผ่านจริง (ไม่ใช่แค่ล็อกหน้าจอ) ต้องใส่รหัสผ่านที่ถูกต้องจึงจะเปิดไฟล์ได้ในโปรแกรมอ่าน PDF ทั่วไป</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="setpass-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -692,6 +799,20 @@
         </button>
       </div>
 
+
+
+
+
+
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่ารหัสผ่าน">
+        <h3 class="tool-side-title">ตั้งค่ารหัสผ่าน</h3>
       <div class="row">
         <div class="field" style="flex:1; min-width:200px;">
           <label>รหัสผ่านสำหรับเปิดไฟล์</label>
@@ -712,7 +833,6 @@
           </div>
         </div>
       </div>
-
       <div class="row">
         <div class="field" style="flex:1; min-width:200px;">
           <label>รหัสผ่านผู้ดูแล (ไม่บังคับ)</label>
@@ -731,13 +851,11 @@
           </select>
         </div>
       </div>
-
       <div class="row">
         <label class="checkline"><input type="checkbox" id="setpass-allow-print" checked /> อนุญาตให้พิมพ์เอกสาร</label>
         <label class="checkline"><input type="checkbox" id="setpass-allow-copy" checked /> อนุญาตให้คัดลอกข้อความ/รูปภาพ</label>
         <label class="checkline"><input type="checkbox" id="setpass-allow-modify" checked /> อนุญาตให้แก้ไขเนื้อหา</label>
       </div>
-
       <div class="row">
         <button class="btn" id="setpass-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -762,6 +880,7 @@
         </button>
       </div>
       <p class="note">รหัสผ่านสำหรับเปิดไฟล์คือรหัสที่ต้องใส่ทุกครั้งที่เปิดไฟล์ ส่วนรหัสผ่านผู้ดูแลใช้สำหรับเปลี่ยนสิทธิ์การใช้งานในอนาคต ถ้าเว้นว่างทั้งสองช่องจะไม่มีการเข้ารหัสเกิดขึ้น</p>
+      </aside>
     </div>
   </section>
 
@@ -773,6 +892,8 @@
       <h2>ปลดล็อกรหัสผ่าน PDF</h2>
     </div>
     <p class="desc">ปลดล็อกไฟล์ PDF ที่เข้ารหัสด้วยรหัสผ่านไว้ (RC4 หรือ AES-256) เมื่อทราบรหัสผ่าน — ได้ไฟล์ที่เปิดได้โดยไม่ต้องใส่รหัสผ่านอีกต่อไป และนำไปใช้กับเมนูอื่นๆ ในเว็บนี้ได้ตามปกติ (เช่น ใส่ลายน้ำ ใส่เลขหน้า)</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="removepass-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -793,6 +914,16 @@
         </button>
       </div>
 
+
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ปลดล็อก">
+        <h3 class="tool-side-title">ปลดล็อก</h3>
       <div class="row">
         <div class="field" style="flex:1; min-width:200px; max-width:340px;">
           <label>รหัสผ่านของไฟล์นี้</label>
@@ -804,7 +935,6 @@
           </div>
         </div>
       </div>
-
       <div class="row">
         <button class="btn" id="removepass-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
@@ -829,6 +959,7 @@
         </button>
       </div>
       <p class="note">รองรับไฟล์ที่เข้ารหัสแบบ RC4 (V1/V2, R2-R4) และ AES-256 (V5/R6) — ไฟล์ที่เข้ารหัสแบบเก่ากว่านั้น (เช่น V4/AES-128) ยังไม่รองรับ ไฟล์ผลลัพธ์ที่ได้จะเปิดได้โดยไม่ต้องใส่รหัสผ่านอีกต่อไป</p>
+      </aside>
     </div>
   </section>
 
@@ -841,6 +972,7 @@
       <h2>แก้ไขเอกสาร</h2>
     </div>
     <p class="desc">คลิกกล่องข้อความบนหน้าเอกสารเพื่อแก้ไขได้ทันที หรือกดปุ่ม "+ เพิ่มข้อความ" เพื่อเพิ่มข้อความใหม่ในตำแหน่งที่ยังไม่มีข้อความ (ลากกล่องข้อความที่เพิ่งเพิ่มไปวางตำแหน่งอื่นได้อิสระ — สังเกตจากกรอบเส้นประ) ทำงานในเบราว์เซอร์ทั้งหมด ไม่ต้องติดตั้งโปรแกรมเสริม</p>
+    <div class="panel-body">
 
     <div class="warn-note">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
@@ -868,7 +1000,8 @@
         </button>
       </div>
 
-      <div class="field" style="margin-bottom:12px;">
+      <div class="qe-topbar">
+      <div class="field qe-mode-field">
         <label>โหมดแก้ไข</label>
         <div class="chip-group" id="quickedit-mode-toggle">
           <button type="button" class="chip active" id="quickedit-mode-edit" data-mode="edit">แก้ไขข้อความเดิม</button>
@@ -920,7 +1053,9 @@
         <button class="btn secondary small" id="quickedit-redo-bar" title="ทำซ้ำ (Ctrl+Y)" disabled>↷ ทำซ้ำ</button>
         <span class="qe-hint" id="quickedit-hint">คลิกกล่องข้อความสีม่วงบนเอกสารเพื่อแก้ไข</span>
       </div>
+      </div>
 
+      <div class="qe-workspace">
       <div class="qe-stage-wrap">
         <div class="qe-stage" id="quickedit-stage">
           <canvas id="quickedit-canvas"></canvas>
@@ -929,7 +1064,16 @@
           <div class="qe-preview-mask" id="quickedit-preview-mask" hidden></div>
           <div class="qe-preview-box" id="quickedit-preview" hidden></div>
 
-          <div class="qe-sidepanel qe-sidepanel-floating qe-sidepanel-empty" id="quickedit-popover" hidden>
+
+
+        <div class="qe-symbol-popover" id="quickedit-symbol-popover" hidden>
+          <button type="button" class="btn danger small" id="quickedit-symbol-delete">ลบสัญลักษณ์นี้</button>
+          <button type="button" class="btn secondary small" id="quickedit-symbol-cancel">ยกเลิก</button>
+        </div>
+        </div>
+      </div>
+        <aside class="qe-dock" aria-label="แก้ไขข้อความ">
+          <div class="qe-sidepanel qe-sidepanel-floating qe-sidepanel-empty qe-docked" id="quickedit-popover" hidden>
           <div class="qe-sidepanel-head">
             <span id="quickedit-popover-head">รูปแบบข้อความ</span>
             <div class="qe-history-btns">
@@ -982,6 +1126,7 @@
             </div>
 
             <div id="quickedit-font-hint" class="qe-font-hint"></div>
+            <button type="button" id="quickedit-localfont-btn" class="btn secondary small qe-localfont-btn" hidden title="ให้เบราว์เซอร์อ่านฟอนต์ที่ติดตั้งในเครื่องนี้ เพื่อใช้ฟอนต์ตัวเดียวกับเอกสาร (ขออนุญาตครั้งแรกครั้งเดียว)"></button>
 
             <div class="qe-popover-actions">
               <button id="quickedit-delete" class="btn danger small qe-popover-delete" title="ลบข้อความนี้ออกจากเอกสาร" style="display:none;">
@@ -993,14 +1138,10 @@
             </div>
           </div>
         </div>
-
-        <div class="qe-symbol-popover" id="quickedit-symbol-popover" hidden>
-          <button type="button" class="btn danger small" id="quickedit-symbol-delete">ลบสัญลักษณ์นี้</button>
-          <button type="button" class="btn secondary small" id="quickedit-symbol-cancel">ยกเลิก</button>
-        </div>
-        </div>
+        </aside>
       </div>
 
+      <div class="qe-bottombar">
       <div class="row">
         <div class="field field-filename">
           <label>ชื่อไฟล์ก่อนดาวน์โหลด</label>
@@ -1016,6 +1157,8 @@
         <button class="btn secondary" id="quickedit-reset-edits">ล้างการแก้ไขทั้งหมด (เริ่มจากไฟล์เดิม)</button>
       </div>
       <div class="status" id="quickedit-status"></div>
+      </div>
+    </div>
     </div>
   </section>
 
@@ -1028,6 +1171,8 @@
       <h2>หมุนหน้า PDF</h2>
     </div>
     <p class="desc">หมุนหน้าเอกสารได้ทีละหน้าหรือทั้งไฟล์ ก่อนบันทึกเป็น PDF ใหม่</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="rotate-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1060,6 +1205,16 @@
           </div>
         </div>
       </div>
+
+      <div class="pagegrid" id="rotate-grid"></div>
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
       <div class="row">
         <div class="field field-full">
           <label>หมุนหน้าที่เลือกไว้</label>
@@ -1071,7 +1226,6 @@
           </div>
         </div>
       </div>
-      <div class="pagegrid" id="rotate-grid"></div>
       <div class="row">
         <button class="btn" id="rotate-run" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1096,6 +1250,7 @@
         </button>
       </div>
       <p class="note">คลิกที่หน้าในตารางเพื่อเลือก/ยกเลิกเฉพาะบางหน้า แล้วกดปุ่มหมุนด้านบน — ภาพตัวอย่างจะหมุนให้ดูทันที ไม่กระทบหน้าที่ไม่ได้เลือก</p>
+      </aside>
     </div>
   </section>
 
@@ -1108,6 +1263,8 @@
       <h2>จัดเรียงหน้าใหม่</h2>
     </div>
     <p class="desc">ลากหน้าเอกสารในตารางเพื่อสลับตำแหน่ง หรือใช้ปุ่มลูกศรบนแต่ละหน้า แล้วบันทึกเป็น PDF ไฟล์ใหม่ตามลำดับที่จัดไว้</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="reorder-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1134,6 +1291,14 @@
         </div>
       </div>
       <div class="pagegrid" id="reorder-grid"></div>
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ผลลัพธ์">
+        <h3 class="tool-side-title">ผลลัพธ์</h3>
       <div class="row">
         <button class="btn" id="reorder-run" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1158,6 +1323,7 @@
         </button>
       </div>
       <p class="note">ลากหน้าใดหน้าหนึ่งไปวางตำแหน่งที่ต้องการในตาราง หรือกดปุ่ม ◀ ▶ บนแต่ละหน้าเพื่อสลับกับหน้าก่อน/ถัดไป — ป้ายกำกับใต้แต่ละหน้าจะบอกเลขหน้าเดิมไว้เสมอ ลำดับที่จัดจะยังไม่มีผลกับไฟล์จริงจนกว่าจะกด "บันทึกไฟล์ตามลำดับใหม่"</p>
+      </aside>
     </div>
   </section>
 
@@ -1170,6 +1336,8 @@
       <h2>JPG to PDF</h2>
     </div>
     <p class="desc">แปลงไฟล์รูปภาพ (JPG/PNG) เป็น PDF โดยตรง เลือกได้หลายไฟล์พร้อมกัน</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="jpgpdf-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1179,6 +1347,9 @@
       <input type="file" id="jpgpdf-input" accept="image/jpeg,image/png" multiple />
     </div>
     <div class="filelist" id="jpgpdf-list"></div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
     <div class="row">
       <div class="field">
         <label>ขนาดหน้ากระดาษ</label>
@@ -1210,6 +1381,338 @@
         ดาวน์โหลดไฟล์ PDF
       </button>
     </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ================= PDF TO JPG ================= -->
+  <section class="panel" id="panel-redact">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+      </div>
+      <h2>ถมดำข้อมูลส่วนตัว</h2>
+    </div>
+    <p class="desc">ปิดข้อมูลส่วนบุคคลใน CV และเอกสารตาม PDPA ระบบหาให้อัตโนมัติ ตรวจทานแล้วกดถมดำ ข้อมูลใต้กล่องจะถูกลบออกจากไฟล์จริง ไม่ใช่แค่ปิดทับ</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="redact-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/><path d="M16 16l-4-4-4 4"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>ได้หลายไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ไฟล์สแกนก็ได้ ระบบจะอ่านด้วย OCR ในเครื่องนี้</div>
+      <input type="file" id="redact-input" accept="application/pdf" multiple />
+    </div>
+    <div id="redact-body" style="display:none;">
+      <div class="rd-files" id="redact-files" role="tablist" aria-label="ไฟล์ที่เลือก"></div>
+      <div class="rd-toolbar">
+        <div class="rd-pager">
+          <button type="button" class="btn secondary small" id="redact-prev" aria-label="หน้าก่อน">‹</button>
+          <span id="redact-pageinfo">หน้า 1 / 1</span>
+          <button type="button" class="btn secondary small" id="redact-next" aria-label="หน้าถัดไป">›</button>
+        </div>
+        <span class="rd-tip">คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง</span>
+      </div>
+      <div class="rd-stage-wrap">
+        <div class="rd-stage" id="redact-stage">
+          <canvas id="redact-canvas"></canvas>
+          <div class="rd-overlay" id="redact-overlay"></div>
+        </div>
+      </div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ข้อมูลที่จะถมดำ</h3>
+        <div class="rd-cats" id="redact-cats">
+<label class="rd-cat"><input type="checkbox" data-cat="idcard" checked /><span class="rd-cat-text"><span class="rd-cat-label">เลขบัตรประชาชน / พาสปอร์ต</span><span class="rd-cat-hint">ตรวจเลข 13 หลักด้วย check digit</span></span><span class="rd-cat-count" data-count="idcard">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="phone" checked /><span class="rd-cat-text"><span class="rd-cat-label">เบอร์โทรศัพท์</span><span class="rd-cat-hint">0x-xxx-xxxx, +66</span></span><span class="rd-cat-count" data-count="phone">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="email" checked /><span class="rd-cat-text"><span class="rd-cat-label">อีเมล</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="email">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="social" checked /><span class="rd-cat-text"><span class="rd-cat-label">LINE / Facebook / ลิงก์โซเชียล</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="social">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="address" checked /><span class="rd-cat-text"><span class="rd-cat-label">ที่อยู่</span><span class="rd-cat-hint">บ้านเลขที่ ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์</span></span><span class="rd-cat-count" data-count="address">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="birth" checked /><span class="rd-cat-text"><span class="rd-cat-label">วันเกิด / อายุ</span><span class="rd-cat-hint"></span></span><span class="rd-cat-count" data-count="birth">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="sensitive" checked /><span class="rd-cat-text"><span class="rd-cat-label">ข้อมูลอ่อนไหว</span><span class="rd-cat-hint">ศาสนา เชื้อชาติ สัญชาติ สถานภาพ น้ำหนัก ส่วนสูง กรุ๊ปเลือด โรคประจำตัว</span></span><span class="rd-cat-count" data-count="sensitive">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="photo" checked /><span class="rd-cat-text"><span class="rd-cat-label">รูปถ่าย</span><span class="rd-cat-hint">รูปภาพขนาดเล็กถึงกลางในเอกสาร</span></span><span class="rd-cat-count" data-count="photo">0</span></label>
+<label class="rd-cat"><input type="checkbox" data-cat="name" checked /><span class="rd-cat-text"><span class="rd-cat-label">ชื่อ-นามสกุลที่ระบุ</span><span class="rd-cat-hint">พิมพ์ชื่อด้านล่าง</span></span><span class="rd-cat-count" data-count="name">0</span></label>
+        </div>
+        <div class="field">
+          <label for="redact-names">ชื่อ-นามสกุลผู้สมัคร (ถ้ามี)</label>
+          <input type="text" id="redact-names" placeholder="เช่น สมชาย ใจดี, Somchai Jaidee" />
+          <button type="button" class="rd-suggest" id="redact-name-suggest" hidden></button>
+        </div>
+        <div class="field">
+          <label for="redact-style">รูปแบบกล่อง</label>
+          <select id="redact-style">
+            <option value="black">ดำทึบ</option>
+            <option value="label">กล่องเทา + คำว่า "ข้อมูลส่วนบุคคล"</option>
+          </select>
+        </div>
+        <details class="rd-hits-wrap">
+          <summary>รายการที่พบ <span id="redact-hit-total">0</span> จุด</summary>
+          <ul class="rd-hits" id="redact-hits"></ul>
+        </details>
+        <div class="row">
+          <button class="btn" id="redact-run" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
+            ถมดำและสร้างไฟล์
+          </button>
+        </div>
+        <progress id="redact-progress" max="100" value="0" style="display:none;"></progress>
+        <div class="status" id="redact-status"></div>
+        <div class="result" id="redact-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="redact-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="redact-filename-input" />
+                <span class="filename-ext" id="redact-filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="redact-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+        <p class="rd-note">หน้าที่มีการถมดำจะถูกแปลงเป็นภาพเพื่อลบข้อมูลใต้กล่องออกจริง และใส่ข้อความที่ค้นหาได้กลับเฉพาะส่วนที่ไม่ได้ถมดำ ระบบล้างชื่อผู้สร้างไฟล์ ลิงก์ และ comment ออกด้วย</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-blank">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg></div>
+      <h2>ลบหน้าว่าง</h2>
+    </div>
+    <p class="desc">หาหน้าว่างในเอกสาร เช่น ด้านหลังกระดาษที่สแกนติดมา แล้วลบออกให้อัตโนมัติ ตรวจดูและเลือกเองได้ก่อนสร้างไฟล์</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="blank-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>1 ไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ไฟล์สแกนก็ได้ ระบบไม่สนใจจุดเล็กๆ และรอยทะลุจากด้านหลังกระดาษ</div>
+      <input type="file" id="blank-input" accept="application/pdf" />
+    </div>
+    <div id="blank-body" style="display:none;">
+      <div class="fileinfo">
+        <div class="fileinfo-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="fileinfo-name" id="blank-filename"></span>
+        </div>
+        <button class="btn secondary small" id="blank-remove">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          ลบไฟล์นี้
+        </button>
+      </div>
+      <div class="bl-summary" id="blank-summary"></div>
+      <div class="wm-pages-tip">กรอบแดง = หน้าที่จะถูกลบ · กดที่รูปเพื่อเปลี่ยน · ตัวเลขมุมล่างคือปริมาณหมึกบนหน้า</div>
+      <div class="pagegrid bl-grid" id="blank-grid"></div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
+        <div class="field">
+          <label for="blank-sens">ความไวในการหาหน้าว่าง</label>
+          <select id="blank-sens">
+            <option value="0.00005">ต่ำ · เฉพาะหน้าที่ไม่มีอะไรเลย</option>
+            <option value="0.001" selected>กลาง · ยอมให้มีจุด รอยเปื้อน หรือเลขหน้า (แนะนำ)</option>
+            <option value="0.005">สูง · รวมหน้าที่มีข้อความน้อยมาก เช่น บรรทัดเดียว</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <button type="button" class="btn secondary small" id="blank-keepall">ไม่ลบเลย</button>
+          <button type="button" class="btn secondary small" id="blank-redetect">หาใหม่ตามความไว</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="blank-run" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9.5" y1="12.5" x2="14.5" y2="17.5"/><line x1="14.5" y1="12.5" x2="9.5" y2="17.5"/></svg> ลบหน้าที่เลือกและสร้างไฟล์</button>
+        </div>
+        <progress id="blank-progress" max="100" value="0" style="display:none;"></progress>
+        <div class="status" id="blank-status"></div>
+        <div class="result" id="blank-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="blank-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="blank-filename-input" />
+                <span class="filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="blank-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-unwatermark">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg></div>
+      <h2>ลบลายน้ำ</h2>
+    </div>
+    <p class="desc">ลบลายน้ำที่ใส่ไว้เป็นข้อความหรือวัตถุแยกในไฟล์ PDF (เช่น ที่ใส่จากเมนูใส่ลายน้ำ, Acrobat, Word หรือเว็บแปลงไฟล์) ใช้กับเอกสารของคุณหรือที่ได้รับอนุญาตเท่านั้น</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="unwatermark-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>1 ไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">ลายน้ำที่ฝังอยู่ในภาพสแกนจะลบไม่ได้</div>
+      <input type="file" id="unwatermark-input" accept="application/pdf" />
+    </div>
+    <div id="unwatermark-body" style="display:none;">
+      <div class="fileinfo">
+        <div class="fileinfo-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="fileinfo-name" id="unwatermark-filename"></span>
+        </div>
+        <button class="btn secondary small" id="unwatermark-remove">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          ลบไฟล์นี้
+        </button>
+      </div>
+      <div class="rd-toolbar">
+        <div class="rd-pager">
+          <button type="button" class="btn secondary small" id="unwatermark-prev" aria-label="หน้าก่อน">‹</button>
+          <span id="unwatermark-pageinfo">หน้า 1 / 1</span>
+          <button type="button" class="btn secondary small" id="unwatermark-next" aria-label="หน้าถัดไป">›</button>
+        </div>
+      </div>
+      <div class="uw-compare">
+        <figure><figcaption>ก่อน</figcaption><canvas id="unwatermark-before"></canvas></figure>
+        <figure><figcaption>หลังลบ</figcaption><canvas id="unwatermark-after"></canvas></figure>
+      </div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ลายน้ำที่พบ</h3>
+        <div class="uw-groups" id="unwatermark-groups"><p class="rd-note" style="margin:0;">เลือกไฟล์เพื่อค้นหาลายน้ำ</p></div>
+        <div class="row">
+          <button class="btn" id="unwatermark-run" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.69l5.66 5.66a8 8 0 0 1 1.9 8.2"/><path d="M6.3 8.4a8 8 0 0 0 11.1 11.3"/><line x1="3" y1="3" x2="21" y2="21"/></svg> ลบลายน้ำที่เลือกและสร้างไฟล์</button>
+        </div>
+        <div class="status" id="unwatermark-status"></div>
+        <div class="result" id="unwatermark-result">
+          <div class="result-info">
+            <div class="stats"></div>
+            <div class="field field-filename">
+              <label for="unwatermark-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+              <div class="filename-row">
+                <input type="text" id="unwatermark-filename-input" />
+                <span class="filename-ext">.pdf</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="unwatermark-download">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ดาวน์โหลด
+          </button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-pdfjpg">
+    <div class="panel-head">
+      <div class="panel-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      </div>
+      <h2>PDF to JPG</h2>
+    </div>
+    <p class="desc">แปลงหน้า PDF เป็นรูปภาพ JPG หรือ PNG เลือกได้ทั้งไฟล์หรือเฉพาะบางหน้า</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
+    <div class="drop" id="pdfjpg-drop">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/><path d="M16 16l-4-4-4 4"/></svg>
+      </div>
+      <div>เลือกไฟล์ PDF <b>1 ไฟล์</b> หรือลากมาวางที่นี่</div>
+      <div class="drop-hint">รองรับ .pdf เท่านั้น</div>
+      <input type="file" id="pdfjpg-input" accept="application/pdf" />
+    </div>
+    <div id="pdfjpg-body" style="display:none;">
+      <div class="fileinfo" id="pdfjpg-fileinfo">
+        <div class="fileinfo-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="fileinfo-name" id="pdfjpg-filename"></span>
+        </div>
+        <button class="btn secondary small" id="pdfjpg-remove">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          ลบไฟล์นี้
+        </button>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1; min-width:220px;">
+          <label for="pdfjpg-range">หน้าที่จะแปลง (เช่น 1-3,5)</label>
+          <input type="text" id="pdfjpg-range" placeholder="เว้นว่าง = ยังไม่เลือกหน้า" />
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <div style="display:flex; gap:6px;">
+            <button class="btn secondary small" id="pdfjpg-all">เลือกทั้งหมด</button>
+            <button class="btn secondary small" id="pdfjpg-none">ล้างการเลือก</button>
+          </div>
+        </div>
+      </div>
+      <div class="pagegrid" id="pdfjpg-grid"></div>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
+      <div class="row">
+        <div class="field">
+          <label for="pdfjpg-format">ชนิดไฟล์</label>
+          <select id="pdfjpg-format">
+            <option value="jpg">JPG (ไฟล์เล็ก เหมาะกับส่งต่อ)</option>
+            <option value="png">PNG (คมชัด ไม่เสียคุณภาพ)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="pdfjpg-dpi">ความละเอียด</label>
+          <select id="pdfjpg-dpi">
+            <option value="96">ต่ำ · 96 DPI (ดูบนจอ)</option>
+            <option value="150" selected>กลาง · 150 DPI (แนะนำ)</option>
+            <option value="300">สูง · 300 DPI (สำหรับพิมพ์)</option>
+          </select>
+        </div>
+        <div class="field" id="pdfjpg-quality-field">
+          <label for="pdfjpg-quality">คุณภาพ JPG: <span class="val" id="pdfjpg-q-val">90%</span></label>
+          <input type="range" id="pdfjpg-quality" min="50" max="100" value="90" />
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" id="pdfjpg-run" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          แปลงเป็นรูปภาพ
+        </button>
+      </div>
+      <progress id="pdfjpg-progress" max="100" value="0" style="display:none;"></progress>
+      <div class="status" id="pdfjpg-status"></div>
+      <div class="result" id="pdfjpg-result">
+        <div class="result-info">
+          <div class="stats"></div>
+          <div class="field field-filename">
+            <label for="pdfjpg-filename-input">ชื่อไฟล์ก่อนดาวน์โหลด</label>
+            <div class="filename-row">
+              <input type="text" id="pdfjpg-filename-input" />
+              <span class="filename-ext" id="pdfjpg-filename-ext">.zip</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn" id="pdfjpg-download">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          ดาวน์โหลด
+        </button>
+      </div>
+      <p class="note">รูปภาพสร้างในเครื่องของคุณ ถ้าเลือกหลายหน้าจะได้เป็นไฟล์ ZIP ที่มีรูปแยกทีละหน้า</p>
+      </aside>
+    </div>
   </section>
 
   <!-- ================= PDF TO WORD ================= -->
@@ -1221,6 +1724,8 @@
       <h2>PDF to WORD</h2>
     </div>
     <p class="desc">แปลงไฟล์ PDF เป็นเอกสาร Word (.docx) โดยดึงข้อความในไฟล์ออกมาจัดเรียงใหม่ ทำงานในเบราว์เซอร์ทั้งหมด ไม่มีการอัปโหลดไฟล์ไปที่ไหนเลย</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="pdfword-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1240,6 +1745,14 @@
           ลบไฟล์นี้
         </button>
       </div>
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ผลลัพธ์">
+        <h3 class="tool-side-title">ผลลัพธ์</h3>
       <div class="row">
         <button class="btn" id="pdfword-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1264,8 +1777,9 @@
           ดาวน์โหลดไฟล์ Word
         </button>
       </div>
-    </div>
     <p class="note">การแปลงนี้ทำงานฝั่งเบราว์เซอร์ล้วนๆ ด้วยการ<b>ดึงข้อความ</b>ออกจาก PDF แล้วจัดเรียงเป็นย่อหน้าใหม่ในเอกสาร Word ข้อความที่ได้จะแก้ไข/คัดลอก/ค้นหาได้ตามปกติ แต่<b>รูปแบบหน้าเดิม เช่น ตาราง หลายคอลัมน์ รูปภาพ และการจัดวางที่ซับซ้อน จะไม่ถูกคงไว้ทั้งหมด</b> เหมาะกับการดึงเนื้อหาไปแก้ไขต่อมากกว่าไฟล์ที่ต้องคงหน้าตาเดิมทุกจุด และไฟล์ PDF ที่เป็นภาพสแกน (ไม่มีชั้นข้อความ) จะไม่มีข้อความให้ดึง — กรุณาใช้เมนู <b>OCR อ่านข้อความ</b> แปลงเป็นชั้นข้อความก่อน แล้วค่อยแปลงเป็น Word ที่นี่</p>
+      </aside>
+    </div>
   </section>
 
   <!-- ================= EXCEL TO PDF ================= -->
@@ -1277,6 +1791,8 @@
       <h2>EXCEL to PDF</h2>
     </div>
     <p class="desc">แปลงไฟล์ Excel (.xlsx) เป็น PDF ทำงานในเบราว์เซอร์ทั้งหมด ไม่มีการอัปโหลดไฟล์ไปที่ไหนเลย</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="excelpdf-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1296,6 +1812,14 @@
           ลบไฟล์นี้
         </button>
       </div>
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ผลลัพธ์">
+        <h3 class="tool-side-title">ผลลัพธ์</h3>
       <div class="row">
         <button class="btn" id="excelpdf-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1320,8 +1844,9 @@
           ดาวน์โหลดไฟล์ PDF
         </button>
       </div>
-    </div>
     <p class="note">แปลงทุกชีตในไฟล์ต่อกันเป็น PDF เดียว (แต่ละชีตขึ้นหน้าใหม่) เหมาะกับตารางข้อมูลทั่วไป <b>ไม่รองรับการตั้งค่าพื้นที่พิมพ์ (Print Area) หรือมาตราส่วนพิมพ์ที่ตั้งไว้ใน Excel</b> ระบบจะแบ่งหน้าอัตโนมัติตามความยาวของตาราง และ<b>ข้อความในไฟล์ผลลัพธ์จะเป็นภาพ ไม่สามารถคัดลอกหรือค้นหาด้วย Ctrl+F ได้</b></p>
+      </aside>
+    </div>
   </section>
 
   <!-- ================= HTML TO PDF ================= -->
@@ -1333,6 +1858,8 @@
       <h2>HTML to PDF</h2>
     </div>
     <p class="desc">แปลงไฟล์ HTML เป็น PDF ทำงานในเบราว์เซอร์ทั้งหมด ไม่มีการอัปโหลดไฟล์ไปที่ไหนเลย</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="htmlpdf-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1352,6 +1879,14 @@
           ลบไฟล์นี้
         </button>
       </div>
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ผลลัพธ์">
+        <h3 class="tool-side-title">ผลลัพธ์</h3>
       <div class="row">
         <button class="btn" id="htmlpdf-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1376,8 +1911,9 @@
           ดาวน์โหลดไฟล์ PDF
         </button>
       </div>
-    </div>
     <p class="note">รองรับไฟล์ HTML เดี่ยวๆ ที่ไม่พึ่งพาไฟล์รูป/CSS/ฟอนต์แยกต่างหาก (ควรฝัง CSS ไว้ใน &lt;style&gt; และรูปเป็น data URI ในไฟล์เดียวกัน) สคริปต์ใดๆ ในไฟล์จะไม่ถูกรันเพื่อความปลอดภัย และ<b>ข้อความในไฟล์ผลลัพธ์จะเป็นภาพ ไม่สามารถคัดลอกหรือค้นหาด้วย Ctrl+F ได้</b></p>
+      </aside>
+    </div>
   </section>
 
   <!-- ================= OCR ================= -->
@@ -1389,6 +1925,8 @@
       <h2>ทำให้ไฟล์สแกนค้นหา/คัดลอกข้อความได้ (OCR)</h2>
     </div>
     <p class="desc">แปลงข้อความในหน้าที่เป็นภาพ (เอกสารสแกน เช่น ใบกำกับภาษี ใบเสร็จ) ให้ค้นหาและคัดลอกได้ โดยหน้าตาเอกสารเหมือนเดิมทุกประการ — เลือกได้ทีละหลายไฟล์ ประมวลผลทั้งหมดในเครื่องของคุณ ไม่มีการอัปโหลดไฟล์ไปที่ใด</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
     <div class="drop" id="ocr-drop">
       <div class="drop-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l-4-4-4 4"/><path d="M12 12v9"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
@@ -1406,6 +1944,17 @@
         </button>
       </div>
 
+
+
+
+
+
+
+
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
       <details class="ocr-advanced">
         <summary>ตัวเลือกเพิ่มเติม (ปกติไม่ต้องปรับ)</summary>
         <div class="row" style="margin-top:12px;">
@@ -1418,7 +1967,6 @@
           </div>
         </div>
       </details>
-
       <div class="row">
         <button class="btn" id="ocr-run">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1451,8 +1999,13 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
             <span id="ocr-download-text-label">ดาวน์โหลดข้อความ (.docx)</span>
           </button>
+          <button class="btn secondary" id="ocr-download-txt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+            ดาวน์โหลดข้อความ (.txt)
+          </button>
         </div>
       </div>
+      </aside>
     </div>
   </section>
 
@@ -1465,6 +2018,8 @@
       <h2>สร้าง QR Code</h2>
     </div>
     <p class="desc">สร้าง QR Code จากข้อความหรือลิงก์ แล้วดาวน์โหลดเป็นไฟล์รูปภาพ (PNG) — ประมวลผลในเบราว์เซอร์ทั้งหมด ไม่มีการส่งข้อมูลออกไปที่ใดเลย</p>
+    <div class="panel-body has-side">
+      <div class="tool-main">
 
     <div class="row">
       <div class="field field-full">
@@ -1472,6 +2027,15 @@
         <textarea id="qrcode-text" rows="3" placeholder="พิมพ์ข้อความ หรือวางลิงก์ที่นี่ เช่น https://example.com"></textarea>
       </div>
     </div>
+
+
+
+    <div class="qr-preview-wrap" id="qrcode-preview-wrap" style="display:none;">
+      <canvas id="qrcode-canvas"></canvas>
+    </div>
+      </div>
+      <aside class="tool-side" aria-label="ตั้งค่า">
+        <h3 class="tool-side-title">ตั้งค่า</h3>
     <div class="row">
       <div class="field">
         <label>ขนาดภาพ (พิกเซล)</label>
@@ -1498,9 +2062,6 @@
       </button>
     </div>
     <div class="status" id="qrcode-status"></div>
-    <div class="qr-preview-wrap" id="qrcode-preview-wrap" style="display:none;">
-      <canvas id="qrcode-canvas"></canvas>
-    </div>
     <div class="result" id="qrcode-result">
       <div class="result-info">
         <div class="stats"></div>
@@ -1518,10 +2079,12 @@
       </button>
     </div>
     <p class="note">ระดับแก้ไขข้อผิดพลาด (Error Correction) ที่สูงขึ้นจะทำให้ QR Code ยังสแกนได้แม้ภาพเสียหายหรือเปื้อนบางส่วน แต่ลวดลายจะละเอียดขึ้นเล็กน้อย — ถ้าไม่แน่ใจแนะนำใช้ค่าเริ่มต้น (ปานกลาง)</p>
+      </aside>
+    </div>
   </section>
+  </main>
 </div>
 
-<div class="version-tag">Version 2.0</div>
 
 <div class="modal-overlay" id="merge-preview-overlay">
   <div class="modal-box">
@@ -1544,7 +2107,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261027a"></script>
+<script src="script.js?v=20261106e"></script>
 
 </body>
 </html>
