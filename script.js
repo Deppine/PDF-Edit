@@ -2646,11 +2646,17 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     try{
       const f = currentPjsPage && item.fontName ? currentPjsPage.commonObjs.get(item.fontName) : null;
       if(f){
-        if(!name && f.name) name = String(f.name).replace(/^[A-Z]{6}\+/, "");
+        // pdf.js knows the font that actually draws this text. The content-
+        // stream lookup above can land on an older run still sitting under a
+        // cover box at the same spot (e.g. regular text replaced by bold), so
+        // a real pdf.js name wins; the lookup only helps with generic names.
+        const pjsName = String(f.name || "").replace(/^[A-Z]{6}\+/, "");
+        if(pjsName && (!name || !/^(CIDFont\+)?F\d+$|^T\d+_\d+$|^Font\d*$/i.test(pjsName))) name = pjsName;
         bold = !!(f.bold || f.black);
         italic = !!f.italic;
       }
     }catch(e){}
+    if(name) name = name.replace(/(-\d{4})+$/, ""); // pdf-lib adds "-1234" to embedded font names
     const fromName = styleFlags(name);
     return { name, bold: bold || fromName.bold, italic: italic || fromName.italic };
   }
