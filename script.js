@@ -8433,7 +8433,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     previewMode = preview;
     previewBtn.setAttribute("aria-pressed", preview ? "true" : "false");
     previewBtn.classList.toggle("active", preview);
-    previewLabel.textContent = preview ? "กลับไปตรวจทาน" : "ดูตัวอย่างไฟล์จริง";
+    previewLabel.textContent = preview ? "กลับไปแก้ไข" : "ดูตัวอย่างไฟล์จริง";
     overlay.classList.toggle("preview", preview);
     banner.classList.toggle("preview", preview);
     bannerText.textContent = preview
