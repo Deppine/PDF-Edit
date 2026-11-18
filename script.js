@@ -8427,12 +8427,13 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
   // "ตัวอย่างไฟล์จริง": show the boxes the way they will be burned in
   let previewMode = false;
-  const modeReview = $("redact-mode-review"), modePreview = $("redact-mode-preview");
+  const previewBtn = $("redact-preview-toggle"), previewLabel = $("redact-preview-label");
   const banner = $("redact-banner"), bannerText = $("redact-banner-text");
   function setMode(preview){
     previewMode = preview;
-    modeReview.classList.toggle("active", !preview); modeReview.setAttribute("aria-selected", preview ? "false" : "true");
-    modePreview.classList.toggle("active", preview); modePreview.setAttribute("aria-selected", preview ? "true" : "false");
+    previewBtn.setAttribute("aria-pressed", preview ? "true" : "false");
+    previewBtn.classList.toggle("active", preview);
+    previewLabel.textContent = preview ? "กลับไปตรวจทาน" : "ดูตัวอย่างไฟล์จริง";
     overlay.classList.toggle("preview", preview);
     banner.classList.toggle("preview", preview);
     bannerText.textContent = preview
@@ -8440,8 +8441,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       : "คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง · กด × เพื่อลบกรอบที่ลากเอง";
     drawBoxes();
   }
-  modeReview.onclick = ()=> setMode(false);
-  modePreview.onclick = ()=> setMode(true);
+  previewBtn.onclick = ()=> setMode(!previewMode);
   function removeBox(b){
     const f = files[cur]; if(!f) return;
     f.boxes = f.boxes.filter(x => x !== b);
@@ -8556,6 +8556,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       suggestBtn.textContent = `ใช้ชื่อที่พบ: “${f.suggestion}”`;
     }else suggestBtn.hidden = true;
     runBtn.disabled = !files.length || files.some(x => !x.analyzed);
+    previewBtn.disabled = !files.length;
+    if(!files.length && previewMode) setMode(false);
     renderFileTabs();
   }
   catsBox.addEventListener("change", ()=>{ savePrefs(); drawBoxes(); refreshSide(); clearResult(); });

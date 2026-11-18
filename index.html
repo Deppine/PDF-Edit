@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261118a" />
+<link rel="stylesheet" href="style.css?v=20261118b" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -1407,10 +1407,6 @@
     <div id="redact-body" style="display:none;">
       <div class="rd-files" id="redact-files" role="tablist" aria-label="ไฟล์ที่เลือก"></div>
       <div class="rd-toolbar">
-        <div class="rd-modes" role="tablist" aria-label="โหมดการดู">
-          <button type="button" role="tab" class="rd-mode active" id="redact-mode-review" aria-selected="true">ตรวจทาน</button>
-          <button type="button" role="tab" class="rd-mode" id="redact-mode-preview" aria-selected="false">ตัวอย่างไฟล์จริง</button>
-        </div>
         <div class="rd-pager">
           <button type="button" class="btn secondary small" id="redact-prev" aria-label="หน้าก่อน">‹</button>
           <span id="redact-pageinfo">หน้า 1 / 1</span>
@@ -1458,6 +1454,10 @@
           <summary>รายการที่พบ <span id="redact-hit-total">0</span> จุด</summary>
           <ul class="rd-hits" id="redact-hits"></ul>
         </details>
+        <button type="button" class="btn secondary rd-preview-btn" id="redact-preview-toggle" aria-pressed="false" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span id="redact-preview-label">ดูตัวอย่างไฟล์จริง</span>
+        </button>
         <div class="row">
           <button class="btn" id="redact-run" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="8" width="8" height="3" fill="currentColor" stroke="none"/><line x1="6" y1="15" x2="18" y2="15"/></svg>
@@ -2114,7 +2114,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261118a"></script>
+<script src="script.js?v=20261118b"></script>
 
 </body>
 </html>

@@ -1096,3 +1096,6 @@ nav.tabs-groups{gap:16px;}
 .rd-box-del:hover{background:#a51f1f;}
 .rd-box-del:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 .rd-hit-del{border:0; background:transparent; color:var(--danger); font-size:16px; line-height:1; padding:0 4px; cursor:pointer;}
+.rd-preview-btn{width:100%; justify-content:center; margin-top:4px;}
+.btn.secondary.rd-preview-btn.active, .btn.secondary.rd-preview-btn.active:hover{background:#111318; color:#fff; border-color:#111318; opacity:1;}
+.btn.secondary.rd-preview-btn.active svg{stroke:#7EE2A8;}
