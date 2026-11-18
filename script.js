@@ -8265,7 +8265,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   }
 
   /* ---------- analysis ---------- */
-  function namesList(){ return namesInput.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean); }
+  function namesList(){ return namesInput ? namesInput.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean) : []; }
 
   async function analyzeFile(f){
     if(f.analyzed || f.analyzing) return;
@@ -8551,7 +8551,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       hitsList.appendChild(li);
     });
     hitTotal.textContent = total;
-    if(f && f.suggestion && !namesInput.value.trim()){
+    if(!suggestBtn){ /* name field removed from the page */ }
+    else if(f && f.suggestion && !namesInput.value.trim()){
       suggestBtn.hidden = false;
       suggestBtn.textContent = `ใช้ชื่อที่พบ: “${f.suggestion}”`;
     }else suggestBtn.hidden = true;
@@ -8563,8 +8564,8 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   catsBox.addEventListener("change", ()=>{ savePrefs(); drawBoxes(); refreshSide(); clearResult(); });
   styleSel.addEventListener("change", ()=>{ savePrefs(); clearResult(); drawBoxes(); });
   let nameT = null;
-  namesInput.addEventListener("input", ()=>{ clearTimeout(nameT); nameT = setTimeout(redetectNames, 350); });
-  suggestBtn.onclick = ()=>{ const f = files[cur]; if(f && f.suggestion){ namesInput.value = f.suggestion; redetectNames(); } };
+  if(namesInput) namesInput.addEventListener("input", ()=>{ clearTimeout(nameT); nameT = setTimeout(redetectNames, 350); });
+  if(suggestBtn) suggestBtn.onclick = ()=>{ const f = files[cur]; if(f && f.suggestion){ namesInput.value = f.suggestion; redetectNames(); } };
 
   function clearResult(){ outBlob = null; result.classList.remove("show"); }
 
