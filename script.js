@@ -8425,9 +8425,43 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     const x0 = Math.min(r[0], r[2]) / dpr, y0 = Math.min(r[1], r[3]) / dpr;
     return { left: x0, top: y0, width: Math.abs(r[2] - r[0]) / dpr, height: Math.abs(r[3] - r[1]) / dpr };
   }
+  // "ตัวอย่างไฟล์จริง": show the boxes the way they will be burned in
+  let previewMode = false;
+  const modeReview = $("redact-mode-review"), modePreview = $("redact-mode-preview");
+  const banner = $("redact-banner"), bannerText = $("redact-banner-text");
+  function setMode(preview){
+    previewMode = preview;
+    modeReview.classList.toggle("active", !preview); modeReview.setAttribute("aria-selected", preview ? "false" : "true");
+    modePreview.classList.toggle("active", preview); modePreview.setAttribute("aria-selected", preview ? "true" : "false");
+    overlay.classList.toggle("preview", preview);
+    banner.classList.toggle("preview", preview);
+    bannerText.textContent = preview
+      ? "นี่คือหน้าตาไฟล์ที่จะได้ · ข้อมูลใต้กล่องจะถูกลบออกจริง คัดลอกหรือค้นหาไม่ได้"
+      : "คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง · กด × เพื่อลบกรอบที่ลากเอง";
+    drawBoxes();
+  }
+  modeReview.onclick = ()=> setMode(false);
+  modePreview.onclick = ()=> setMode(true);
+  function removeBox(b){
+    const f = files[cur]; if(!f) return;
+    f.boxes = f.boxes.filter(x => x !== b);
+    drawBoxes(); refreshSide(); clearResult();
+  }
   function drawBoxes(){
     overlay.innerHTML = "";
     const f = files[cur]; if(!f || !viewport) return;
+    if(previewMode){
+      const label = styleSel.value === "label";
+      f.boxes.filter(b => b.page === curPage && effective(b)).forEach(b=>{
+        const el = document.createElement("div");
+        el.className = "rd-burn" + (label ? " label" : "");
+        const r = cssRect(b.rect);
+        Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+        if(label && r.width > r.height * 2.2) el.textContent = r.width > 120 ? "ข้อมูลส่วนบุคคล" : "PDPA";
+        overlay.appendChild(el);
+      });
+      return;
+    }
     f.boxes.filter(b => b.page === curPage && catOn(b.cat)).forEach(b=>{
       const el = document.createElement("button");
       el.type = "button";
@@ -8440,6 +8474,18 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       el.addEventListener("pointerdown", e => e.stopPropagation());
       el.onclick = ()=>{ b.on = !b.on; drawBoxes(); refreshSide(); clearResult(); };
       overlay.appendChild(el);
+      if(b.cat === "manual"){
+        // a box drawn by hand can be removed altogether
+        el.addEventListener("keydown", e=>{ if(e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); removeBox(b); } });
+        const del = document.createElement("button");
+        del.type = "button"; del.className = "rd-box-del"; del.textContent = "×";
+        del.setAttribute("aria-label", "ลบกรอบที่เพิ่มเองนี้"); del.title = "ลบกรอบนี้";
+        const r = cssRect(b.rect);
+        Object.assign(del.style, { left: (r.left + r.width) + "px", top: r.top + "px" });
+        del.addEventListener("pointerdown", e => e.stopPropagation());
+        del.onclick = ()=> removeBox(b);
+        overlay.appendChild(del);
+      }
     });
   }
   prevBtn.onclick = ()=>{ if(curPage > 1){ curPage--; renderPage(); } };
@@ -8450,7 +8496,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
   // drag on the page to add a box by hand
   let dragStart = null, ghost = null;
   overlay.addEventListener("pointerdown", e=>{
-    if(e.button !== 0 || cur < 0) return;
+    if(e.button !== 0 || cur < 0 || previewMode) return;
     e.preventDefault();
     const r = overlay.getBoundingClientRect();
     dragStart = { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -8495,7 +8541,14 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
       txt.innerHTML = `<b>${CAT_LABEL[b.cat]}</b> ${escapeHtml(b.label.slice(0, 60))}`;
       const go = document.createElement("button"); go.type = "button"; go.className = "rd-hit-page"; go.textContent = "หน้า " + b.page;
       go.onclick = ()=>{ if(curPage !== b.page){ curPage = b.page; renderPage(); } };
-      lab.append(chk, txt); li.append(lab, go); hitsList.appendChild(li);
+      lab.append(chk, txt); li.append(lab, go);
+      if(b.cat === "manual"){
+        const del = document.createElement("button"); del.type = "button"; del.className = "rd-hit-del";
+        del.textContent = "×"; del.setAttribute("aria-label", "ลบกรอบที่เพิ่มเองนี้");
+        del.onclick = ()=> removeBox(b);
+        li.append(del);
+      }
+      hitsList.appendChild(li);
     });
     hitTotal.textContent = total;
     if(f && f.suggestion && !namesInput.value.trim()){
@@ -8506,7 +8559,7 @@ async function addCanvasAsSinglePdfPage(pdfDoc, canvas, pxToPt){
     renderFileTabs();
   }
   catsBox.addEventListener("change", ()=>{ savePrefs(); drawBoxes(); refreshSide(); clearResult(); });
-  styleSel.addEventListener("change", ()=>{ savePrefs(); clearResult(); });
+  styleSel.addEventListener("change", ()=>{ savePrefs(); clearResult(); drawBoxes(); });
   let nameT = null;
   namesInput.addEventListener("input", ()=>{ clearTimeout(nameT); nameT = setTimeout(redetectNames, 350); });
   suggestBtn.onclick = ()=>{ const f = files[cur]; if(f && f.suggestion){ namesInput.value = f.suggestion; redetectNames(); } };

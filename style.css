@@ -1080,3 +1080,19 @@ nav.tabs-groups{gap:16px;}
 .uw-compare canvas{max-width:100%; height:auto; background:#fff; box-shadow:var(--shadow-lg); border-radius:4px;}
 .uw-groups{display:flex; flex-direction:column; gap:2px; margin-bottom:14px;}
 @media (max-width:640px){ .uw-compare{grid-template-columns:1fr;} }
+
+/* ถมดำ: ตรวจทาน / ตัวอย่างไฟล์จริง + ลบกรอบที่ลากเอง */
+.rd-modes{display:inline-flex; background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:3px; gap:3px;}
+.rd-mode{height:36px; padding:0 14px; border:0; border-radius:9px; background:transparent; color:var(--text-2); font:inherit; font-size:14px; cursor:pointer;}
+.rd-mode.active{background:var(--panel); color:var(--text); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.12);}
+.rd-banner{display:flex; align-items:center; gap:10px; margin:0 0 10px; padding:9px 14px; border-radius:12px; font-size:13.5px; background:#FFF4E5; color:#6B4A0B; border:1px solid #F3D9AE;}
+.rd-banner-key{width:14px; height:14px; flex:none; border:2px solid #f08a00; background:rgba(240,138,0,.3); border-radius:3px;}
+.rd-banner.preview{background:#111318; color:#F3F4F6; border-color:#111318;}
+.rd-banner.preview .rd-banner-key{border-color:#000; background:#000; box-shadow:0 0 0 1px #7EE2A8;}
+.rd-overlay.preview{cursor:default;}
+.rd-burn{position:absolute; background:#000; pointer-events:none;}
+.rd-burn.label{background:#4b4f58; color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; overflow:hidden; white-space:nowrap;}
+.rd-box-del{position:absolute; width:22px; height:22px; margin:-11px 0 0 -11px; padding:0; border:2px solid #fff; border-radius:50%; background:#c62828; color:#fff; font-size:14px; line-height:1; font-weight:700; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:center; z-index:2;}
+.rd-box-del:hover{background:#a51f1f;}
+.rd-box-del:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+.rd-hit-del{border:0; background:transparent; color:var(--danger); font-size:16px; line-height:1; padding:0 4px; cursor:pointer;}

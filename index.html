@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
 <title>Lyra</title>
 <link rel="stylesheet" href="vendor/google-fonts-local.css" />
-<link rel="stylesheet" href="style.css?v=20261106e" />
+<link rel="stylesheet" href="style.css?v=20261118a" />
 </head>
 <body>
 <div class="wrap app-shell">
@@ -1407,12 +1407,19 @@
     <div id="redact-body" style="display:none;">
       <div class="rd-files" id="redact-files" role="tablist" aria-label="ไฟล์ที่เลือก"></div>
       <div class="rd-toolbar">
+        <div class="rd-modes" role="tablist" aria-label="โหมดการดู">
+          <button type="button" role="tab" class="rd-mode active" id="redact-mode-review" aria-selected="true">ตรวจทาน</button>
+          <button type="button" role="tab" class="rd-mode" id="redact-mode-preview" aria-selected="false">ตัวอย่างไฟล์จริง</button>
+        </div>
         <div class="rd-pager">
           <button type="button" class="btn secondary small" id="redact-prev" aria-label="หน้าก่อน">‹</button>
           <span id="redact-pageinfo">หน้า 1 / 1</span>
           <button type="button" class="btn secondary small" id="redact-next" aria-label="หน้าถัดไป">›</button>
         </div>
-        <span class="rd-tip">คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง</span>
+      </div>
+      <div class="rd-banner" id="redact-banner">
+        <span class="rd-banner-key" aria-hidden="true"></span>
+        <span id="redact-banner-text">คลิกกรอบเพื่อเลือก/ยกเลิก · ลากบนหน้าเพื่อเพิ่มกรอบเอง · กด × เพื่อลบกรอบที่ลากเอง</span>
       </div>
       <div class="rd-stage-wrap">
         <div class="rd-stage" id="redact-stage">
@@ -2107,7 +2114,7 @@
 <script src="vendor/thai-font-data.js"></script>
 <script src="vendor/quickedit-fonts-data.js?v=20260828a"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="script.js?v=20261106f"></script>
+<script src="script.js?v=20261118a"></script>
 
 </body>
 </html>
